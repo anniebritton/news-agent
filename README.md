@@ -1,15 +1,41 @@
 # News Agent
 
-A small, config-driven framework for agents that watch web pages, use an LLM to pick out and summarize
-what matters to you, and send the result to a messaging channel (Telegram, Signal, or your own). Point it at any topic (security advisories, product
-releases, regulatory filings, local news...) by writing one YAML file. No code changes needed.
+[![Tests](https://github.com/anniebritton/news-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/anniebritton/news-agent/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**Watch any set of web pages, let an LLM pick out what matters, and get a short message on Telegram or Signal.**
+You describe the topic in one YAML file. No code changes, no server: it runs fine on a free GitHub Actions schedule.
+
+It's built for niches where updates are frequent, timing matters, and general news apps bury the signal. For
+example, the bundled `example_launches` agent watches rocket launch schedules and tells you when a mission
+scrubs or gets a new target date. A message looks like this (illustrative):
+
+```
+LAUNCH WATCH
+
+• Example Mission 1 (Example Provider): Scrubbed for weather; new target is tomorrow at 14:05 UTC. [example.com/launch]
+• Example Mission 2 (Example Provider): Static fire completed; launch still targeted for Friday. [example.com/news]
+```
+
+## Try it in two minutes (no Telegram needed)
+
+```bash
+git clone https://github.com/anniebritton/news-agent && cd news-agent
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+GEMINI_API_KEY=... python main.py --agent example_launches --dry-run
+```
+
+`--dry-run` prints to the console and doesn't save state, so you can iterate on prompts freely. You need a
+free [Gemini API key](https://aistudio.google.com/). To make your own, copy `agents/TEMPLATE.yaml` and edit it, or
+click **Use this template** on GitHub.
 
 ## How it works
 
-1. **Scrape**: fetches all configured feed pages in parallel and extracts links.
+1. **Scrape**: fetches your feed pages in parallel and extracts links.
 2. **Pre-filter**: keeps only links whose titles match your keywords (saves LLM cost).
 3. **Extract**: fetches each article and asks the LLM, in batches, for structured items that fit your scope.
-4. **Deduplicate**: skips anything already seen or older than the lookback window (state is persisted per agent).
+4. **Deduplicate**: skips anything already seen or older than the lookback window (state persisted per agent).
 5. **Notify**: renders one channel-neutral message for every configured channel, or a short "nothing new" status.
 
 ## Layout
@@ -25,54 +51,47 @@ newsagent/
   config.py       Loading/validation
   messages.py     Channel-neutral Message/Line model
   notifiers/      Notifier registry + Telegram, Signal, console
-agents/           One YAML per agent (TEMPLATE.yaml, example_security.yaml)
+agents/           One YAML per agent (TEMPLATE.yaml + examples)
 state/            Per-agent state files
-main.py           CLI: python main.py --agent <id>
+main.py           CLI: python main.py --agent <id> [--dry-run]
 ```
-
-## Quick start
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp agents/TEMPLATE.yaml agents/myagent.yaml    # edit it
-GEMINI_API_KEY=... MYAGENT_TELEGRAM_BOT_TOKEN=... MYAGENT_TELEGRAM_CHAT_ID=... \
-  python main.py --agent myagent
-```
-
-The bot token is the full `123456:ABC...` string. The chat ID is negative for groups/channels, positive for direct chats.
 
 ## Configuring an agent
 
-See `agents/TEMPLATE.yaml` (annotated) and `agents/example_security.yaml` (working example). The main knobs:
+See `agents/TEMPLATE.yaml` (annotated), `agents/example_launches.yaml` and `agents/example_security.yaml`.
 
 - `feeds`: pages to scrape
 - `keywords`: title pre-filter (flat list, or dict of lists)
 - `prompts`: `system`, `task` (must contain `{indexed_text}` and `{date_str}`), `scope.include/exclude`
-- `messages`: header/status/error labels and `item_template` using `{group} {subject} {title} {summary}` (the source link is added for you`
+- `messages`: header/status/error labels and `item_template` using `{group} {subject} {title} {summary}` (the source link is added for you)
 - `notify.channels`: one or more channels (`telegram`, `signal`, `console`), each naming the env vars that hold its credentials
 - `settings`: lookback window, batch size, summary length, `require_subject`
 
 The extractor returns items with `subject`, `group`, `summary`, and `title`; what those mean is up to your prompt
-(e.g. subject = product, group = vendor).
+(for launches: subject = mission, group = provider).
+
+For Telegram, the bot token is the full `123456:ABC...` string, and the chat ID is negative for groups/channels.
 
 ## Extending
 
-- **Another LLM**: implement `generate(prompt) -> Optional[str]` (see `LLMProvider`) and pass it as `NewsAgent(config, llm=...)`, or add a branch in `build_provider`.
-- **Another channel** (Slack, email, Discord...): add a module in `newsagent/notifiers/` with a class decorated `@register("name")` that takes its channel config dict and implements `async send(message: Message)`, import it in `notifiers/__init__.py`, then use `type: name` in config. `Message.to_plain()` gives a ready-made plain-text rendering.
+- **Another channel** (Slack, email, Discord...): add a module in `newsagent/notifiers/` with a class decorated `@register("name")`, then use `type: name` in config. See [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Another LLM**: implement `generate(prompt) -> Optional[str]` (`LLMProvider`) and pass it as `NewsAgent(config, llm=...)`.
 
 Signal has no official bot API; the built-in channel talks to a self-hosted [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) server.
 
 ## Running on GitHub Actions
 
-`.github/workflows/run_agent.yml` runs tests, runs the agent on a schedule, and commits the state file with
-`[skip ci]`. Copy it per agent, change the `AGENT` env var, secret names, and name. Add `GEMINI_API_KEY` plus
-the secrets for the agent's channels as repo secrets.
+`.github/workflows/run_agent.yml` runs the agent and commits the state file with `[skip ci]`. Scheduled runs are
+commented out so a fresh copy doesn't fail before its secrets exist: add the secrets (`GEMINI_API_KEY` plus your
+channel secrets), then uncomment the `schedule`. Copy the file per agent and change `AGENT` and the secret names.
+High-frequency schedules create many small state commits; consider a dedicated state branch if that bothers you.
 
-## Tests
+## Contributing
+
+Issues and PRs welcome, especially new notification channels and example agents. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests/ -v    # no API keys or network needed
 ```
 
-No API keys or network needed; the LLM and HTTP calls are faked.
+MIT licensed.

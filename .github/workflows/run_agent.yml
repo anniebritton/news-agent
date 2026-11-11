@@ -1,18 +1,20 @@
 # Template workflow. To run another agent, copy this file to run_<id>.yml and change
 # the name, the AGENT value, and the secret names. Add secrets for whichever
 # notify channels the agent config uses (e.g. SIGNAL_* instead of TELEGRAM_*).
-name: News Agent (example_security)
+name: News Agent (example_launches)
 
 on:
-  schedule:
-    - cron: '0 6,14,22 * * *'   # UTC
+  # Scheduled runs are off by default so a fresh copy of this template doesn't fail
+  # before its secrets exist. Uncomment once the secrets are set.
+  # schedule:
+  #   - cron: '0 6,14,22 * * *'   # UTC. Each run that finds news commits the state file.
   workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
-  AGENT: example_security
+  AGENT: example_launches
 
 jobs:
   run-agent:
@@ -31,8 +33,8 @@ jobs:
       - name: Run agent
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          EXAMPLE_SECURITY_TELEGRAM_BOT_TOKEN: ${{ secrets.EXAMPLE_SECURITY_TELEGRAM_BOT_TOKEN }}
-          EXAMPLE_SECURITY_TELEGRAM_CHAT_ID: ${{ secrets.EXAMPLE_SECURITY_TELEGRAM_CHAT_ID }}
+          EXAMPLE_LAUNCHES_TELEGRAM_BOT_TOKEN: ${{ secrets.EXAMPLE_LAUNCHES_TELEGRAM_BOT_TOKEN }}
+          EXAMPLE_LAUNCHES_TELEGRAM_CHAT_ID: ${{ secrets.EXAMPLE_LAUNCHES_TELEGRAM_CHAT_ID }}
         run: python main.py --agent "$AGENT"
       - name: Commit state
         run: |

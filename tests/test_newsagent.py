@@ -319,3 +319,21 @@ def test_gemini_returns_none_when_all_fail():
     with patch("google.genai.Client") as client_cls:
         client_cls.return_value.models.generate_content.side_effect = RuntimeError("x")
         assert GeminiProvider("key", models=["m1"]).generate("p") is None
+
+
+# ---- dry run -------------------------------------------------------------------
+
+async def test_dry_run_prints_and_does_not_save_state(tmp_path, monkeypatch, capsys):
+    import main
+    resp = json.dumps([{"index": 0, "translated_title": "Big News", "subject": "Acme", "group": "G", "summary": "Happened"}])
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("agents")
+    with open("agents/dry.yaml", "w") as f:
+        yaml.safe_dump(cfg(agent={"id": "dry", "name": "Dry"}), f)
+    fake = FakeLLM(resp)
+    monkeypatch.setattr("newsagent.agent.build_provider", lambda config: fake)
+    monkeypatch.setattr(NewsFetcher, "fetch_url", AsyncMock(
+        side_effect=lambda self_url=None, *a, **k: "[Alpha story](https://a.test/1)"))
+    await main.run("dry", dry_run=True)
+    assert "Acme" in capsys.readouterr().out
+    assert not os.path.exists(os.path.join("state", "dry_processed_news.json"))
