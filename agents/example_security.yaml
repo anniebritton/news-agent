@@ -1,0 +1,78 @@
+# Example agent: security advisories and vulnerability disclosures.
+# Run: python main.py --agent example_security
+
+agent:
+  id: example_security
+  name: "Security Advisories"
+  description: "Notable vulnerability disclosures affecting widely used software"
+
+feeds:
+  - "https://www.cisa.gov/news-events/cybersecurity-advisories"
+  - "https://nvd.nist.gov/general/news"
+  - "https://www.bleepingcomputer.com/"
+
+keywords:
+  - vulnerability
+  - CVE-
+  - zero-day
+  - exploit
+  - patch
+  - advisory
+  - ransomware
+  - breach
+
+prompts:
+  system: |
+    You are a security analyst monitoring disclosures for widely deployed software.
+    Report only actionable items: a named product or vendor, and what the reader should do or watch for.
+    ALL OUTPUT MUST BE IN ENGLISH.
+
+  task: |
+    Review the numbered articles below and return only the ones that qualify.
+    Include an item ONLY if a specific product, library, or vendor is named.
+
+    CURRENT TIME: {date_str}
+
+    --- NEWS ---
+    {indexed_text}
+    ------------
+
+  scope:
+    include:
+      - Newly disclosed vulnerabilities with a CVE ID or vendor advisory
+      - Actively exploited flaws and emergency patches
+      - Confirmed breaches at named vendors
+    exclude:
+      - Opinion pieces, vendor marketing, conference announcements
+      - Items with no named product or vendor
+      - Anything older than 24 hours from CURRENT TIME
+
+messages:
+  header: "SECURITY ADVISORIES"
+  status_label: "SECURITY STATUS"
+  error_label: "SECURITY AGENT ERROR"
+  item_template: "{subject} ({group}): {summary}"
+
+# Where results go. List any number of channels; each is sent the same message.
+# Values ending in _env are the NAMES of env vars / GitHub secrets, never the secrets.
+notify:
+  channels:
+    - type: telegram
+      bot_token_env: EXAMPLE_SECURITY_TELEGRAM_BOT_TOKEN
+      chat_id_env: EXAMPLE_SECURITY_TELEGRAM_CHAT_ID
+    # - type: signal            # needs a signal-cli-rest-api server
+    #   api_url_env: EXAMPLE_SECURITY_SIGNAL_API_URL
+    #   sender_env: EXAMPLE_SECURITY_SIGNAL_SENDER
+    #   recipients_env: EXAMPLE_SECURITY_SIGNAL_RECIPIENTS   # comma-separated numbers/group IDs
+    # - type: console           # print to stdout (local runs)
+
+llm:
+  provider: gemini
+  api_key_env: GEMINI_API_KEY
+
+settings:
+  time_window_hours: 24
+  batch_size: 4
+  max_summary_length: 200
+  max_state_items: 1000
+  require_subject: true

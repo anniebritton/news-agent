@@ -1,0 +1,42 @@
+# Template workflow. To run another agent, copy this file to run_<id>.yml and change
+# the name, the AGENT value, and the secret names. Add secrets for whichever
+# notify channels the agent config uses (e.g. SIGNAL_* instead of TELEGRAM_*).
+name: News Agent (example_security)
+
+on:
+  schedule:
+    - cron: '0 6,14,22 * * *'   # UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  AGENT: example_security
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests
+        run: python -m pytest tests/ -v
+      - name: Run agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EXAMPLE_SECURITY_TELEGRAM_BOT_TOKEN: ${{ secrets.EXAMPLE_SECURITY_TELEGRAM_BOT_TOKEN }}
+          EXAMPLE_SECURITY_TELEGRAM_CHAT_ID: ${{ secrets.EXAMPLE_SECURITY_TELEGRAM_CHAT_ID }}
+        run: python main.py --agent "$AGENT"
+      - name: Commit state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state/
+          git diff --staged --quiet || (git commit -m "chore: update $AGENT state [skip ci]" && git push)

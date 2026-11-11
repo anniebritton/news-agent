@@ -1,0 +1,7 @@
+google-generativeai
+httpx
+beautifulsoup4
+lxml
+pyyaml
+pytest
+pytest-asyncio
