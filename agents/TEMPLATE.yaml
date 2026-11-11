@@ -1,0 +1,78 @@
+# Agent config template. Copy to agents/<id>.yaml and fill in.
+# The id must match the filename and the --agent argument: python main.py --agent <id>
+
+agent:
+  id: <id>                     # short lowercase identifier
+  name: "<Human Name>"         # used in logs
+  description: "<optional one-liner>"
+
+# Pages to scrape (RSS, news indexes, blogs...). Links found on them are candidates.
+feeds:
+  - "https://example.com/news"
+
+# Cheap pre-filter BEFORE any LLM call: a link is kept only if its title contains
+# one of these (case-insensitive). Use a flat list, or a dict of lists (merged).
+# Remove the list entirely to send every new link to the LLM.
+keywords:
+  - "keyword one"
+  - "keyword two"
+
+prompts:
+  system: |
+    You are an analyst monitoring <topic>. Extract only items that <what counts as news for you>.
+    ALL OUTPUT MUST BE IN ENGLISH.
+
+  # MUST contain {indexed_text} and {date_str}
+  task: |
+    Review the numbered articles below and return only the ones that qualify.
+
+    CURRENT TIME: {date_str}
+
+    --- NEWS ---
+    {indexed_text}
+    ------------
+
+  scope:
+    include:
+      - "<kinds of items you want>"
+    exclude:
+      - "<kinds of items you don't>"
+
+  # Optional. Defaults to the generic schema in newsagent/extractor.py
+  # (index, translated_title, subject, group, summary). Override only if needed,
+  # but keep those field names, since the agent reads them.
+  # output_format: |
+  #   ...
+
+messages:
+  header: "<TOPIC> UPDATES"
+  status_label: "<TOPIC> STATUS"      # sent when nothing new is found
+  error_label: "<TOPIC> AGENT ERROR"
+  # Placeholders: {group} {subject} {title} {summary}
+  item_template: "{group}, {subject}, {summary}"
+
+# Where results go. List any number of channels; each is sent the same message.
+# Values ending in _env are the NAMES of env vars / GitHub secrets, never the secrets.
+notify:
+  channels:
+    - type: telegram
+      bot_token_env: <ID>_TELEGRAM_BOT_TOKEN
+      chat_id_env: <ID>_TELEGRAM_CHAT_ID
+    # - type: signal            # needs a signal-cli-rest-api server
+    #   api_url_env: <ID>_SIGNAL_API_URL
+    #   sender_env: <ID>_SIGNAL_SENDER
+    #   recipients_env: <ID>_SIGNAL_RECIPIENTS   # comma-separated numbers/group IDs
+    # - type: console           # print to stdout (local runs)
+
+llm:
+  provider: gemini                 # gemini is the only built-in; see newsagent/llm.py to add more
+  api_key_env: GEMINI_API_KEY
+  # models: [gemini-2.5-flash, gemini-2.0-flash]
+  # temperature: 0.0
+
+settings:
+  time_window_hours: 8      # lookback on the first run; later runs use time since last run
+  batch_size: 4             # articles per LLM call
+  max_summary_length: 180   # characters per line in the notification
+  max_state_items: 1000     # IDs/URLs kept in the state file
+  require_subject: true     # drop items where the LLM couldn't name a subject
