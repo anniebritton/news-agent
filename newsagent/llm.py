@@ -11,29 +11,28 @@ class LLMProvider(Protocol):
         ...
 
 
+DEFAULT_GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash"]
+
+
 class GeminiProvider:
-    """Google Gemini, trying each model in order until one returns text."""
+    """Google Gemini via the google-genai SDK, trying each model in order until one returns text."""
 
     def __init__(self, api_key: str, models: Optional[List[str]] = None, temperature: float = 0.0):
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        self._genai = genai
-        self.models = models or ["gemini-2.5-flash", "gemini-2.0-flash"]
+        from google import genai
+        self.client = genai.Client(api_key=api_key)
+        self.models = models or DEFAULT_GEMINI_MODELS
         self.temperature = temperature
 
     def generate(self, prompt: str) -> Optional[str]:
         last_error = None
         for name in self.models:
             try:
-                model = self._genai.GenerativeModel(name, generation_config={"temperature": self.temperature})
-                response = model.generate_content(prompt)
-                try:
-                    if response.text:
-                        logger.info(f"Successfully used model: {name}")
-                        return response.text
-                except ValueError as e:
-                    logger.warning(f"Response had no text on {name}: {response.prompt_feedback}")
-                    last_error = e
+                response = self.client.models.generate_content(
+                    model=name, contents=prompt, config={"temperature": self.temperature})
+                if response.text:
+                    logger.info(f"Successfully used model: {name}")
+                    return response.text
+                logger.warning(f"Empty response from {name}")
             except Exception as e:
                 logger.warning(f"Model {name} failed: {e}. Trying fallback...")
                 last_error = e

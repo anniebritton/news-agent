@@ -67,7 +67,7 @@ notify:
 llm:
   provider: gemini                 # gemini is the only built-in; see newsagent/llm.py to add more
   api_key_env: GEMINI_API_KEY
-  # models: [gemini-2.5-flash, gemini-2.0-flash]
+  # models: [gemini-3.8-flash, gemini-3.6-flash]   # tried in order; check Google's deprecations page
   # temperature: 0.0
 
 settings:

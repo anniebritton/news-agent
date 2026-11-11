@@ -9,6 +9,7 @@ from newsagent import NewsAgent, load_config, validate_config
 from newsagent.config import keyword_list
 from newsagent.extractor import Extractor
 from newsagent.fetcher import NewsFetcher
+from newsagent.llm import GeminiProvider
 from newsagent import Line, Message
 from newsagent.notifiers import ConsoleNotifier, SignalNotifier, TelegramNotifier, build_notifiers
 from newsagent.scraper import NewsScraper
@@ -298,3 +299,23 @@ def test_no_sports_or_betting_terms_in_repo():
                 continue
             for term in banned:
                 assert term not in text, f"'{term}' found in {os.path.relpath(path, ROOT)}"
+
+
+# ---- gemini provider (SDK mocked) --------------------------------------------
+
+def test_gemini_falls_back_across_models():
+    with patch("google.genai.Client") as client_cls:
+        models = client_cls.return_value.models
+        ok = MagicMock(text="hello")
+        models.generate_content.side_effect = [RuntimeError("model gone"), ok]
+        p = GeminiProvider("key", models=["m1", "m2"])
+        assert p.generate("prompt") == "hello"
+        calls = [c.kwargs for c in models.generate_content.call_args_list]
+        assert [c["model"] for c in calls] == ["m1", "m2"]
+        assert calls[0]["config"] == {"temperature": 0.0} and calls[0]["contents"] == "prompt"
+
+
+def test_gemini_returns_none_when_all_fail():
+    with patch("google.genai.Client") as client_cls:
+        client_cls.return_value.models.generate_content.side_effect = RuntimeError("x")
+        assert GeminiProvider("key", models=["m1"]).generate("p") is None
