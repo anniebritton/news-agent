@@ -30,6 +30,8 @@ GEMINI_API_KEY=... python main.py --agent example_launches --dry-run
 free [Gemini API key](https://aistudio.google.com/). To make your own, copy `agents/TEMPLATE.yaml` and edit it, or
 click **Use this template** on GitHub.
 
+> **Using an AI coding agent?** Point it at [`AGENTS.md`](AGENTS.md): it has a step-by-step workflow to set up an agent for your topic (finding feeds, writing the config, dry-running, wiring Telegram) and the rules for changing the framework.
+
 ## How it works
 
 1. **Scrape**: fetches your feed pages in parallel and extracts links.

@@ -3,6 +3,8 @@
 Thanks for helping. This project stays small on purpose: a topic-agnostic core in `newsagent/`, and
 everything topic-specific in `agents/*.yaml`.
 
+AI coding agents: see [`AGENTS.md`](AGENTS.md).
+
 ## Setup
 
 ```bash

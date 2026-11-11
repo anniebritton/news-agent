@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replaced `CLAUDE.md` with `AGENTS.md`, adding a setup workflow for AI coding agents.
 - Added `--dry-run` (prints to the console, does not save state).
 - Added `example_launches` agent (rocket launch schedule changes); the example workflow now runs it.
 - Added CONTRIBUTING, issue/PR templates, Dependabot, and a PR test workflow.
