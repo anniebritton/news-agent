@@ -1,0 +1,84 @@
+# Example agent: orbital launch schedule changes (scrubs, delays, new target dates).
+# A good fit for this framework: a niche topic where timing matters, updates come
+# in bursts around a launch window, and generic news apps bury them.
+# Try it without any Telegram setup:  python main.py --agent example_launches --dry-run
+
+agent:
+  id: example_launches
+  name: "Launch Watch"
+  description: "Schedule changes for orbital rocket launches"
+
+feeds:
+  - "https://www.rocketlaunch.live/"
+  - "https://www.space.com/spaceflight"
+  - "https://spacenews.com/section/launch/"
+  - "https://www.nasa.gov/news/"
+
+keywords:
+  - launch
+  - scrub
+  - delay
+  - postpone
+  - static fire
+  - target date
+  - rollout
+  - liftoff
+  - scrubbed
+  - stand down
+
+prompts:
+  system: |
+    You track orbital rocket launches and report schedule changes the moment they happen.
+    Only report concrete changes or confirmations to a specific mission's timing: scrubs, delays,
+    new target dates, go/no-go decisions, rollouts, static fires, and liftoffs.
+    ALL OUTPUT MUST BE IN ENGLISH.
+
+  task: |
+    Review the numbered articles below. Return only items that change or confirm the timing of a
+    specific, named mission. For each, "subject" is the mission or rocket name, "group" is the
+    operator or launch provider, and "summary" gives the new status and the new date/time if stated.
+
+    CURRENT TIME: {date_str}
+
+    --- NEWS ---
+    {indexed_text}
+    ------------
+
+  scope:
+    include:
+      - Scrubs, delays, and new target dates for a named mission
+      - Rollout, static fire, and launch-readiness milestones with a stated date
+      - Successful launches and failures, reported once
+    exclude:
+      - Items with no named mission or rocket
+      - General space news, opinion, features, and mission retrospectives
+      - Spacecraft operations after launch (orbit raises, science results)
+      - Anything older than 6 hours from CURRENT TIME
+
+messages:
+  header: "LAUNCH WATCH"
+  status_label: "LAUNCH WATCH"
+  error_label: "LAUNCH WATCH ERROR"
+  item_template: "{subject} ({group}): {summary}"
+
+notify:
+  channels:
+    - type: telegram
+      bot_token_env: EXAMPLE_LAUNCHES_TELEGRAM_BOT_TOKEN
+      chat_id_env: EXAMPLE_LAUNCHES_TELEGRAM_CHAT_ID
+    # - type: signal
+    #   api_url_env: EXAMPLE_LAUNCHES_SIGNAL_API_URL
+    #   sender_env: EXAMPLE_LAUNCHES_SIGNAL_SENDER
+    #   recipients_env: EXAMPLE_LAUNCHES_SIGNAL_RECIPIENTS
+    # - type: console
+
+llm:
+  provider: gemini
+  api_key_env: GEMINI_API_KEY
+
+settings:
+  time_window_hours: 6
+  batch_size: 4
+  max_summary_length: 200
+  max_state_items: 1000
+  require_subject: true

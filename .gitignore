@@ -206,3 +206,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 config.yaml
+state/*.corrupt-*
+state/*.bak-*
+state/*.tmp
