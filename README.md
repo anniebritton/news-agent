@@ -106,12 +106,16 @@ The run uses a concurrency group and rebases before pushing the state commit. Te
 | 0 | OK |
 | 1 | Failure: nothing was delivered, the LLM failed for every batch, or every feed was unreachable. State is **not** saved; the next run retries |
 | 2 | Configuration problem, or a required notification secret / API key is missing (checked before any LLM call) |
-| 3 | The state file is corrupt (it is moved aside and the run aborts instead of silently re-announcing everything) |
+| 3 | The state file is corrupt. **Every run exits 3 until you run `--reset-state`**: nothing is moved or changed automatically, so a later run can't silently start empty and re-announce everything |
 | 4 | Partial delivery: some channel(s) delivered, others failed. State **was** saved |
 
 Delivery is at-least-once per run: state is saved once at least one channel accepted the message. A channel that failed while another succeeded does not receive that message again (exit 4, logged as `PARTIAL DELIVERY`). If the process crashes after sending but before saving, the next run re-sends the same items, so duplicates are possible but loss is not. If every feed is unreachable the agent says so (an outage is not "no news") and does not advance its clock; if only some are, the message carries a note.
 
-**Corrupt state (exit 3 on every run):** run `python main.py --agent <id> --reset-state` (it backs the file up as `.corrupt-<timestamp>` and writes empty state), or tick `reset_state` when running the workflow manually. Then run `--seed` so the reset doesn't re-announce everything. The previous file is in git history.
+**Corrupt state (every run exits 3 until reset):** run `python main.py --agent <id> --reset-state` (it backs the file up as `.corrupt-<timestamp>` and writes empty state), then `--seed` so the reset doesn't re-announce everything. In CI, run the workflow manually and tick both `reset_state` and `seed`; no local checkout is needed. Ticking only `seed` seeds without resetting. The previous file is in git history.
+
+**Dead feeds:** a feed that fails holds back the "last run" clock, so articles it published while it was down aren't later judged too old. After 5 consecutive failed runs the agent stops holding the clock for that feed (and logs a warning naming it). If a feed is permanently dead, remove it from `feeds`. If *every* feed fails, that is always reported as an outage (exit 1).
+
+**The state commit always runs.** In the example workflow the agent step records its exit code instead of failing the job, the state commit then runs regardless (so an exit 4 or a status-only failure doesn't lose already-saved state), and a final step re-exits with the agent's code so the run still shows red.
 
 **Protected branches:** the state commit is a direct push, which branch protection can block. Allow `github-actions[bot]` to bypass the rule, or keep state on a dedicated unprotected branch (see the comments in `run_agent.yml`).
 

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ITEM_TEMPLATE = "{group}, {subject}, {summary}"
 MAX_FETCH_FAILURES = 3   # after this many failed fetches a link is given up on
+CHRONIC_FEED_FAILURES = 5  # a feed that failed this many runs in a row no longer holds back the clock
 
 
 @dataclass
@@ -36,6 +37,12 @@ class RoundResult:
     deferred: int = 0       # relevant items held back by max_items_per_message
     feeds_total: int = 0
     feeds_failed: int = 0   # feeds that could not be fetched at all
+    feeds_chronic: int = 0  # of those, feeds that have now failed CHRONIC_FEED_FAILURES runs in a row
+
+    @property
+    def feeds_transient(self) -> int:
+        """Failed feeds that might just be having a bad moment; these hold the clock back."""
+        return self.feeds_failed - self.feeds_chronic
 
     @property
     def all_failed(self) -> bool:
@@ -96,6 +103,7 @@ class NewsAgent:
         self._pending_seen: Dict[str, None] = {}
         self._pending_processed: Dict[str, None] = {}
         self._pending_failures: Dict[str, int] = {}
+        self._pending_feed_failures: Dict[str, int] = {}
         self._pending_clock: Optional[datetime] = None
 
     def _compact(self, text) -> str:
@@ -184,14 +192,22 @@ class NewsAgent:
         reports, candidates = await self.check(limit)
         result.feeds_total = len(reports)
         result.feeds_failed = sum(1 for r in reports if not r.fetched)
+        for r in reports:
+            self._pending_feed_failures[r.url] = 0 if r.fetched else self.state.feed_failures.get(r.url, 0) + 1
+        chronic = [r.url for r in reports if not r.fetched and self._pending_feed_failures[r.url] >= CHRONIC_FEED_FAILURES]
+        result.feeds_chronic = len(chronic)
         if result.feeds_failed:
             logger.warning(f"{result.feeds_failed} of {result.feeds_total} feeds could not be fetched: "
                            + ", ".join(r.url for r in reports if not r.fetched))
+        if chronic:
+            logger.warning(f"These feeds have failed {CHRONIC_FEED_FAILURES}+ runs in a row and no longer hold "
+                           "back the clock; remove them from `feeds` if they are permanently dead: "
+                           + ", ".join(chronic))
         if result.all_feeds_failed:
             return result  # an outage, not "no news": don't advance the clock or claim all is quiet
         if not candidates:
             logger.info("No new matching links found in feeds.")
-            if not result.feeds_failed:
+            if not result.feeds_transient:
                 self._pending_clock = now
             return result
 
@@ -225,7 +241,7 @@ class NewsAgent:
 
         # Advance the clock only if everything was handled; otherwise retried items could
         # look "too old" next time.
-        if not (result.failed_batches or result.fetch_failures or result.feeds_failed):
+        if not (result.failed_batches or result.fetch_failures or result.feeds_transient):
             self._pending_clock = now
         logger.info(f"Generated {len(result.lines)} new summaries "
                     f"({result.failed_batches}/{result.total_batches} batches failed, "
@@ -246,6 +262,11 @@ class NewsAgent:
                 self.state.fetch_failures.pop(url, None)
             else:
                 self.state.fetch_failures[url] = count
+        for url, count in self._pending_feed_failures.items():
+            if count:
+                self.state.feed_failures[url] = count
+            else:
+                self.state.feed_failures.pop(url, None)
         if self._pending_clock:
             self.state.last_run_at = self._pending_clock.isoformat()
         ok = self.state.save_state()

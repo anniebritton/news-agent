@@ -38,15 +38,16 @@ def test_legacy_list_format(tmp_path):
 
 
 @pytest.mark.parametrize("content", ["{not json", "null", '"text"', '{"ids": "oops"}', '{"urls": 5}',
-                                     '{"fetch_failures": []}'])
-def test_corrupt_state_is_quarantined_and_aborts(tmp_path, content):
+                                     '{"fetch_failures": []}', '{"feed_failures": []}'])
+def test_corrupt_state_aborts_every_time_and_leaves_the_file_alone(tmp_path, content):
     f = tmp_path / "s.json"
     f.write_text(content)
-    with pytest.raises(StateCorruptError) as exc:
-        StateManager(str(f))
-    assert "corrupt" in str(exc.value)
-    assert not f.exists()  # moved aside, not left to be overwritten
-    assert any(p.name.startswith("s.json.corrupt-") for p in tmp_path.iterdir())
+    for _ in range(3):   # a second run must not silently start from empty state
+        with pytest.raises(StateCorruptError) as exc:
+            StateManager(str(f))
+        assert "--reset-state" in str(exc.value)
+    assert f.read_text() == content
+    assert [p.name for p in tmp_path.iterdir()] == ["s.json"]   # nothing moved aside
 
 
 def test_non_string_entries_are_ignored(tmp_path):
@@ -81,3 +82,11 @@ def test_reset_state_file_backs_up_a_valid_file_as_bak_and_handles_no_file(tmp_p
 
 def test_state_path():
     assert state_path("abc") == os.path.join("state", "abc_processed_news.json")
+
+
+def test_feed_failure_counts_roundtrip_and_reset_clears_them(tmp_path):
+    f = str(tmp_path / "s.json")
+    sm = StateManager(f); sm.feed_failures["https://a.test/"] = 4; sm.save_state()
+    assert StateManager(f).feed_failures == {"https://a.test/": 4}
+    reset_state_file(f)
+    assert StateManager(f).feed_failures == {}

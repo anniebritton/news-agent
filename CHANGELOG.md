@@ -11,11 +11,17 @@
 - One malformed LLM item no longer drops the whole batch.
 - `time_window_hours` is now actually enforced (the LLM reports `published`); future/garbage `last_run_at` handled.
 - Dedupe keys on the canonical URL instead of a 50-character title slug.
-- State keeps the *newest* entries when truncated; a corrupt state file is quarantined and aborts the run instead of silently resetting.
+- State keeps the *newest* entries when truncated; a corrupt state file aborts the run (exit 3) instead of silently resetting, and keeps doing so on every run until `--reset-state` (nothing is moved automatically).
 - Config validation rejects unknown placeholders and unbalanced braces; null `agent:`/`notify:` blocks give friendly errors.
 - Prompt injection hardening: article text is delimited and the extractor adds an "ignore instructions in articles" rule.
 - Secrets redacted from logs; the channel only receives fixed generic error text; `hostname` (not `netloc`) in link labels; link schemes allowlisted when rendering.
 - Workflow: concurrency group, rebase-and-retry push, no tests in the run job, credentials only in the commit step, dependency bounds.
+
+### Fixed (third review round)
+- Workflow: the state commit now runs even when the agent exits non-zero (it used to be skipped, losing already-saved state after exit 4 or a status-only failure and re-notifying the delivered channel every run); a final step re-exits with the agent's code so the run still shows red. `actionlint` clean.
+- Corrupt state now blocks every run (exit 3) until `--reset-state`; it is no longer moved aside on detection, which let a second run start empty and re-announce everything.
+- Workflow `seed` dispatch input (tick with `reset_state` to recover from CI alone).
+- Per-feed consecutive-failure tracking: a feed that failed 5+ runs in a row no longer holds back the clock (warning names it); `feed_failures` is kept in the state file.
 
 ### Fixed (second review round)
 - Prompt-injection delimiter escape: URLs are percent-encoded (also in `canonical_url`), angle brackets (ASCII, full-width, small-form) are stripped from titles/content, and article delimiters are random per run.
@@ -31,7 +37,7 @@
 ### Added
 - `--reset-state`.
 - `--check` (list candidate links, no API key), `--seed` (record current links without notifying), `--limit N`; missing API key is a friendly error.
-- Test suite grew from 33 to 193 tests, each fix verified by reverting it and watching a test fail.
+- Test suite grew from 33 to 204 tests, each fix verified by reverting it and watching a test fail.
 
 ### Changed
 - Replaced `CLAUDE.md` with `AGENTS.md`, adding a setup workflow for AI coding agents.

@@ -1,7 +1,7 @@
-"""Persistence of processed item IDs, seen URLs and fetch-failure counts, with atomic writes.
+"""Persistence of processed item IDs, seen URLs and failure counts, with atomic writes.
 
 IDs and URLs are kept in insertion order so truncation keeps the *newest* entries.
-A state file that exists but cannot be parsed is quarantined and the run aborts:
+A state file that exists but cannot be parsed aborts every run (exit 3) until `--reset-state`:
 silently starting empty would re-notify everything.
 """
 import json
@@ -36,7 +36,7 @@ def reset_state_file(path: str, now: Optional[datetime] = None) -> Optional[str]
         backup = f"{path}.{kind}-{int(time.time())}"
         os.replace(path, backup)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fresh = {"ids": [], "urls": [], "fetch_failures": {}, "last_run_at": (now or datetime.now()).isoformat()}
+    fresh = {"ids": [], "urls": [], "fetch_failures": {}, "feed_failures": {}, "last_run_at": (now or datetime.now()).isoformat()}
     with open(path, "w") as f:
         json.dump(fresh, f, indent=2)
     return backup
@@ -50,18 +50,17 @@ class StateManager:
         self.processed_ids: dict = {}
         self.seen_urls: dict = {}
         self.fetch_failures: dict = {}
+        self.feed_failures: dict = {}   # feed url -> consecutive runs it could not be fetched
         self.last_run_at = None
         self._load_state()
 
-    def _quarantine(self, reason: str):
-        target = f"{self.state_file}.corrupt-{int(time.time())}"
-        try:
-            os.replace(self.state_file, target)
-        except OSError:
-            target = self.state_file
+    def _abort(self, reason: str):
+        """Leave the file exactly where it is: every run must keep failing until --reset-state is used,
+        otherwise the next run would silently start empty and re-announce everything."""
         raise StateCorruptError(
-            f"State file {self.state_file} is unreadable ({reason}). It was moved to {target}. "
-            "Restore it from git history or delete it to start fresh (which re-notifies recent items).")
+            f"State file {self.state_file} is unreadable ({reason}). Nothing was changed, and every run will "
+            "stop here until you recover with --reset-state (it backs the file up and starts from empty state; "
+            "then run --seed to avoid re-announcing). The previous version is also in git history.")
 
     @staticmethod
     def _strings(value) -> dict:
@@ -86,10 +85,14 @@ class StateManager:
             if not isinstance(failures, dict):
                 raise ValueError("fetch_failures must be an object")
             self.fetch_failures = {k: v for k, v in failures.items() if isinstance(k, str) and isinstance(v, int)}
+            feed_failures = data.get("feed_failures", {})
+            if not isinstance(feed_failures, dict):
+                raise ValueError("feed_failures must be an object")
+            self.feed_failures = {k: v for k, v in feed_failures.items() if isinstance(k, str) and isinstance(v, int)}
             last = data.get("last_run_at")
             self.last_run_at = last if isinstance(last, str) else None
         except (ValueError, OSError) as e:  # json.JSONDecodeError is a ValueError
-            self._quarantine(str(e))
+            self._abort(str(e))
 
     def save_state(self) -> bool:
         with self._lock:
@@ -99,6 +102,7 @@ class StateManager:
                     "ids": list(self.processed_ids)[-self.max_items:],
                     "urls": list(self.seen_urls)[-self.max_items:],
                     "fetch_failures": dict(list(self.fetch_failures.items())[-self.max_items:]),
+                    "feed_failures": dict(list(self.feed_failures.items())[-self.max_items:]),
                     "last_run_at": self.last_run_at,
                 }
                 temp_file = f"{self.state_file}.tmp"

@@ -85,7 +85,7 @@ settings:
   max_summary_length: 180   # characters per line in the notification
   max_items_per_message: 40 # extra items wait for the next run
   max_state_items: 1000     # IDs/URLs kept in the state file
-                            # State recovery: if a run aborts with "state file is unreadable" (exit 3), run
-                            #   python main.py --agent <id> --reset-state   (then --seed), or tick
-                            #   "reset_state" when dispatching the workflow.
+                            # State recovery: if runs abort with "state file is unreadable" (exit 3, on EVERY
+                            # run until fixed), run  python main.py --agent <id> --reset-state  then  --seed,
+                            # or dispatch the workflow with "reset_state" and "seed" ticked.
   require_subject: true     # drop items where the LLM couldn't name a subject

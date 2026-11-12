@@ -10,9 +10,18 @@
 # 2 config or missing secret | 3 corrupt state | 4 partial delivery (state saved). Any non-zero
 # code fails the job, which is how you find out. Details: README, "Running on GitHub Actions".
 #
-# CORRUPT STATE (exit 3 on every run): Actions > this workflow > Run workflow > tick "reset_state".
-# That backs the file up, writes empty state, and commits it; then run `--seed` locally (or accept
-# one run that re-reports whatever is currently on the pages).
+# The state commit runs even when the agent exits non-zero (exit 4 = partial delivery, or a status-only
+# failure, both of which have already saved state), and a last step re-exits with the agent's code so the
+# run still shows red. Without that, the ephemeral runner would throw the saved state away and a channel
+# that already received the message would be re-notified every run.
+#
+# CORRUPT STATE: every run exits 3 until you recover. Actions > this workflow > Run workflow, tick
+# "reset_state" AND "seed". That backs the file up, writes empty state, records everything currently on
+# the pages as seen (so nothing is re-announced), and commits. Tick only "seed" to seed without a reset.
+#
+# DEAD FEEDS: a feed that fails holds back the "last run" clock (so articles it published aren't treated
+# as too old when it returns). After 5 consecutive failed runs it stops doing so and a warning names it;
+# remove permanently dead feeds from the agent's YAML.
 #
 # PROTECTED BRANCH: the state commit is a direct push to the branch. If branch protection blocks it,
 # either allow github-actions[bot] to bypass the rule, or keep state on a dedicated unprotected branch
@@ -29,7 +38,11 @@ on:
   workflow_dispatch:
     inputs:
       reset_state:
-        description: "Recovery: back up the state file and start from empty state (run no agent)"
+        description: "Recovery: back up the state file and start from empty state (the agent is not run)"
+        type: boolean
+        default: false
+      seed:
+        description: "Record everything currently on the pages as seen without notifying (combine with reset_state to recover)"
         type: boolean
         default: false
 
@@ -63,14 +76,26 @@ jobs:
       - name: Reset state (recovery)
         if: ${{ inputs.reset_state }}
         run: python main.py --agent "$AGENT" --reset-state
+      - name: Seed state
+        if: ${{ inputs.seed }}
+        run: python main.py --agent "$AGENT" --seed
       - name: Run agent
-        if: ${{ !inputs.reset_state }}
+        id: agent
+        if: ${{ !inputs.reset_state && !inputs.seed }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EXAMPLE_LAUNCHES_TELEGRAM_BOT_TOKEN: ${{ secrets.EXAMPLE_LAUNCHES_TELEGRAM_BOT_TOKEN }}
           EXAMPLE_LAUNCHES_TELEGRAM_CHAT_ID: ${{ secrets.EXAMPLE_LAUNCHES_TELEGRAM_CHAT_ID }}
-        run: python main.py --agent "$AGENT"
+        run: |
+          # Don't fail the job here: the state commit below must still run. The "Fail the run" step
+          # re-exits with this code at the end.
+          set +e
+          python main.py --agent "$AGENT"
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Commit state
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -97,3 +122,10 @@ jobs:
           done
           echo "::error::Could not push state after 3 attempts"
           exit 1
+      - name: Fail the run if the agent failed
+        if: ${{ !cancelled() && steps.agent.outputs.exit_code != '' && steps.agent.outputs.exit_code != '0' }}
+        env:
+          EXIT_CODE: ${{ steps.agent.outputs.exit_code }}
+        run: |
+          echo "::error::main.py exited with code ${EXIT_CODE} (1 failure, 2 config/secret, 3 corrupt state, 4 partial delivery)"
+          exit "$EXIT_CODE"

@@ -4,7 +4,7 @@ Exit codes:
   0  ok
   1  failure: no channel delivered, the LLM failed for every batch, or every feed was unreachable
   2  configuration problem (bad config, missing secret/API key)
-  3  corrupt state file (recover with --reset-state)
+  3  corrupt state file: EVERY run exits 3 until you recover with --reset-state
   4  partial delivery: at least one channel delivered and at least one failed (state WAS saved)
 
 Delivery semantics: state is saved once at least one channel accepted the message (at-least-once
@@ -185,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--dry-run", action="store_true", help="Print results to the console; do not notify or save state")
     mode.add_argument("--check", action="store_true", help="Fetch feeds and list candidate links. No LLM, no API key, no state writes")
     mode.add_argument("--seed", action="store_true", help="Record current links as seen without notifying (avoids a first-run flood)")
-    mode.add_argument("--reset-state", action="store_true", help="Recover from a corrupt state file: move it aside and start with empty state")
+    mode.add_argument("--reset-state", action="store_true", help="Recover from a corrupt state file: back it up and start with empty state (then run --seed)")
     parser.add_argument("--limit", type=positive_int, default=None, help="Process at most N candidate links (N >= 1)")
     return parser
 

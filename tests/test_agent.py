@@ -246,3 +246,46 @@ async def test_a_down_feed_with_no_candidates_elsewhere_still_does_not_advance_t
     assert result.feeds_failed == 1 and result.lines == []
     agent.commit()
     assert agent.state.last_run_at is None
+
+
+def two_feeds(tmp_path, down_before):
+    agent = make_agent(tmp_path, FakeLLM("[]"), feeds=["https://feed.test/", "https://down.test/"])
+    agent.state.feed_failures["https://down.test/"] = down_before
+    real = agent.fetcher.fetch_url
+
+    async def fetch(url):
+        return None if "down.test" in url else await real(url)
+    agent.fetcher.fetch_url = fetch
+    return agent
+
+
+async def test_a_recently_failing_feed_holds_the_clock_and_its_count_grows(tmp_path):
+    agent = two_feeds(tmp_path, down_before=3)
+    result = await agent.run_round()
+    assert (result.feeds_failed, result.feeds_chronic, result.feeds_transient) == (1, 0, 1)
+    agent.commit()
+    assert agent.state.last_run_at is None and agent.state.feed_failures == {"https://down.test/": 4}
+
+
+async def test_a_chronically_dead_feed_stops_holding_the_clock_and_is_named(tmp_path, caplog):
+    agent = two_feeds(tmp_path, down_before=4)            # this run is its 5th failure in a row
+    result = await agent.run_round()
+    assert (result.feeds_failed, result.feeds_chronic, result.feeds_transient) == (1, 1, 0)
+    assert "https://down.test/" in caplog.text and "permanently dead" in caplog.text
+    agent.commit()
+    assert agent.state.last_run_at                         # the clock advances again
+    assert agent.state.feed_failures == {"https://down.test/": 5}
+
+
+async def test_a_feed_that_recovers_has_its_failure_count_cleared(tmp_path):
+    agent = make_agent(tmp_path, FakeLLM("[]"), feeds=["https://feed.test/"])
+    agent.state.feed_failures["https://feed.test/"] = 3
+    await agent.run_round(); agent.commit()
+    assert agent.state.feed_failures == {}
+
+
+async def test_total_outage_is_still_an_outage_even_if_every_feed_is_chronic(tmp_path):
+    agent = make_agent(tmp_path, FakeLLM("[]"))
+    agent.state.feed_failures["https://feed.test/"] = 9
+    agent.fetcher.fetch_url = lambda url: _none()
+    assert (await agent.run_round()).all_feeds_failed

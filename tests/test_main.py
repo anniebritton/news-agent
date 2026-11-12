@@ -163,7 +163,7 @@ async def test_corrupt_state_aborts_with_a_clear_error(env, capsys):
     env.use()
     assert await main.run("t") == 3
     err = capsys.readouterr().err
-    assert "corrupt" in err and "--reset-state" in err and not env.rec.messages
+    assert "unreadable" in err and "--reset-state" in err and not env.rec.messages
 
 
 async def test_broadcast_survives_a_channel_that_raises():
@@ -220,7 +220,7 @@ async def test_reset_state_recovers_from_a_corrupt_file(env, capsys):
     os.makedirs("state")
     open(env.state, "w").write("{broken")
     assert await main.run("t") == 3                           # default stays: abort on corrupt
-    open(env.state, "w").write("{broken")                     # (the abort moved it aside; recreate it)
+    assert await main.run("t") == 3                           # ...every time
     assert await main.run("t", reset_state=True) == 0
     assert any(n.startswith("t_processed_news.json.corrupt-") for n in os.listdir("state"))
     assert json.load(open(env.state))["ids"] == [] and json.load(open(env.state))["last_run_at"]
@@ -248,3 +248,14 @@ def test_uncaught_errors_print_one_redacted_line_and_no_traceback(monkeypatch, c
     assert main.cli(["--agent", "t"]) == 1
     err = capsys.readouterr().err
     assert "SECRETTOKENVALUE" not in err and "Traceback" not in err and len(err.strip().splitlines()) == 1
+
+
+async def test_reset_then_seed_recovers_without_reannouncing(env):
+    os.makedirs("state")
+    open(env.state, "w").write("{broken")
+    assert await main.run("t") == 3
+    assert await main.run("t", reset_state=True) == 0
+    assert await main.run("t", seed=True) == 0
+    assert "https://a.test/1" in json.load(open(env.state))["urls"]
+    rec = env.use(llm_response=GOOD)
+    assert await main.run("t") == 0 and "No new updates" in rec.text      # nothing re-announced
