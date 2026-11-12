@@ -103,3 +103,35 @@ def test_keyword_list_forms():
     assert keyword_list(["A", "b"]) == ["a", "b"]
     assert keyword_list({"x": ["A"], "y": ["B"]}) == ["a", "b"]
     assert keyword_list(None) == []
+
+
+@pytest.mark.parametrize("settings", [
+    {"batch_size": 0}, {"batch_size": "4"}, {"batch_size": True}, {"max_items_per_message": 0},
+    {"max_summary_length": 0}, {"max_state_items": -1}, {"time_window_hours": -1}, {"time_window_hours": "8"},
+    "not a mapping"])
+def test_bad_settings_are_rejected_with_a_clear_message(settings):
+    with pytest.raises(ConfigError, match="settings"):
+        validate_config(cfg(settings=settings))
+
+
+def test_good_settings_accepted():
+    validate_config(cfg(settings={"batch_size": 1, "max_items_per_message": 5, "time_window_hours": 0,
+                                  "max_summary_length": 50, "max_state_items": 10}))
+
+
+def test_unknown_channel_type_is_rejected_at_validation_time():
+    with pytest.raises(ConfigError, match="carrier-pigeon.*Available"):
+        validate_config(cfg(notify={"channels": [{"type": "carrier-pigeon"}]}))
+
+
+def test_format_conversions_are_allowed_and_bad_ones_rejected():
+    check_template("{summary!r} {title!s}", {"summary", "title"}, "t")
+    with pytest.raises(ConfigError):
+        check_template("{summary!x}", {"summary"}, "t")
+
+
+def test_keywords_key_is_required_but_may_be_empty():
+    validate_config(cfg(keywords=[]))
+    c = cfg(); del c["keywords"]
+    with pytest.raises(ConfigError, match="keywords"):
+        validate_config(c)

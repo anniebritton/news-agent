@@ -7,3 +7,7 @@ class ConfigError(ValueError):
 
 class StateCorruptError(RuntimeError):
     """The state file exists but could not be parsed. It has been quarantined."""
+
+
+class FeedsUnreachable(RuntimeError):
+    """Every configured feed failed to load (network outage, blocking, or wrong URLs)."""

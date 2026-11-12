@@ -4,7 +4,7 @@ Instructions for AI coding agents. Two jobs: **(A) set up a news agent for a use
 
 ## What this is
 
-A config-driven framework: it scrapes pages, uses an LLM to pick out items that match a topic, and sends a short message to Telegram, Signal, or the console. A topic is one YAML file in `agents/`. The shared package `newsagent/` is topic-agnostic; a test enforces that it contains no domain-specific terms.
+A config-driven framework: it scrapes pages, uses an LLM to pick out items that match a topic, and sends a short message to Telegram, Signal, or the console. A topic is one YAML file in `agents/`. The shared package `newsagent/` is meant to stay topic-agnostic. (`tests/test_leakage.py` only guards against a short list of leftover words from the project this was extracted from; it is not a general check, so keep the package topic-free by review.)
 
 ## Rules that apply to everything you do
 
@@ -40,7 +40,10 @@ A config-driven framework: it scrapes pages, uses an LLM to pick out items that 
 8. **Automation (optional).** Copy `.github/workflows/run_agent.yml` to `run_<id>.yml`; change `name`, `AGENT`, and the secret names, and check every env var name matches the YAML exactly. Uncomment the `schedule` with a cron the user agrees to. How it works, so you can explain it:
    - The run commits `state/<id>_processed_news.json` back to the repo (that's how it remembers what it already sent). The commit uses `[skip ci]`.
    - The workflow uses a concurrency group and rebases before pushing, so overlapping runs queue instead of racing.
-   - **A green run means the program finished, not that a message was necessarily useful.** The program exits non-zero when no channel accepts the message or the LLM fails for every batch, and in that case it does *not* save state, so the next run retries the same items. A frequent schedule creates many small state commits.
+   - **A green run means the program finished, not that a message was necessarily useful.** Exit codes: `0` ok; `1` nothing was delivered, the LLM failed for every batch, or every feed was unreachable (state is *not* saved, so the next run retries); `2` config problem or a missing secret (checked before any LLM call); `3` corrupt state file; `4` partial delivery (see below). A frequent schedule creates many small state commits.
+   - **Delivery semantics.** State is saved once at least one channel accepted the message. With several channels, a channel that failed while another succeeded does *not* get that message again (the run exits 4 and logs `PARTIAL DELIVERY`). If the process crashes after sending but before saving, the next run re-sends the same items, so duplicates are possible but loss is not.
+   - **Corrupt state file** (exit 3 on every run): `python main.py --agent <id> --reset-state` backs the file up and writes empty state; in CI tick `reset_state` when dispatching the workflow. Then run `--seed` so the reset doesn't re-announce everything. The old file is still in git history.
+   - **Protected branches** block the state push. Allow `github-actions[bot]` to bypass, or keep state on a dedicated unprotected branch (see the comment in the workflow).
    - Run it once with `workflow_dispatch` and have the user confirm the message arrived.
 9. **Report** the files you created, what each keyword/scope choice is for, and what the user still has to do (secrets, seeding, enabling the schedule).
 
@@ -49,10 +52,10 @@ A config-driven framework: it scrapes pages, uses an LLM to pick out items that 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest tests/ -v                # no API keys or network needed; run before pushing
-python main.py --agent <id> [--check | --seed | --dry-run] [--limit N]   # run from the repo root
+python main.py --agent <id> [--check | --seed | --dry-run | --reset-state] [--limit N]   # run from the repo root
 ```
 
-- Keep `newsagent/` topic-agnostic. Topic specifics (feeds, prompts, labels) belong in `agents/*.yaml`.
+- Keep `newsagent/` topic-agnostic by review. Topic specifics (feeds, prompts, labels) belong in `agents/*.yaml`.
 - Inside `newsagent/` use relative imports; `main.py` and tests use `newsagent.*`.
 - **State is written only by `NewsAgent.commit()`, and `main.py` calls it only after a channel accepted the message.** Never mark URLs or IDs seen earlier (that was a bug class: a failed LLM call or a failed send used to lose items silently). The scraper only reads state.
 - **Network safety lives in `newsagent/fetcher.py`**: http(s) only, non-public addresses refused on every redirect hop, 2 MB streamed cap, text content types only, failures return `None`. Don't bypass `fetch_url`. Known limitation: DNS rebinding.

@@ -1,4 +1,6 @@
+import asyncio
 import socket
+import time
 
 import httpx
 import pytest
@@ -125,7 +127,30 @@ async def test_unresolvable_host_returns_none():
 
 def test_ip_is_blocked_table():
     for blocked in ("127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "::1",
-                    "fe80::1", "fc00::1", "::ffff:10.0.0.1", "100.64.0.1", "224.0.0.1", "0.0.0.0"):
+                    "fe80::1", "fc00::1", "::ffff:10.0.0.1", "100.64.0.1", "224.0.0.1", "0.0.0.0",
+                    "64:ff9b::7f00:1", "64:ff9b::a00:1", "2002:7f00:1::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2"):
         assert ip_is_blocked(blocked), blocked
     for allowed in ("93.184.216.34", "8.8.8.8", "2606:2800:220:1:248:1893:25c8:1946"):
         assert not ip_is_blocked(allowed), allowed
+
+
+async def test_a_stalled_server_is_cut_off_by_the_wall_clock_deadline():
+    async def stall(request):
+        await asyncio.sleep(10)
+        return html("<html>late</html>")
+    f = NewsFetcher(resolver=resolver, transport=httpx.MockTransport(stall), deadline=0.2)
+    start = time.perf_counter()
+    assert await f.fetch_url("https://a.test/slow") is None
+    assert time.perf_counter() - start < 3
+
+
+async def test_slow_dripping_body_cannot_outlive_the_deadline():
+    async def drip():
+        for _ in range(100):
+            await asyncio.sleep(0.1)   # each read is fast, so a per-read timeout never fires
+            yield b"x" * 10
+    f = NewsFetcher(resolver=resolver, transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, headers={"content-type": "text/plain"}, content=drip())), deadline=0.5)
+    start = time.perf_counter()
+    assert await f.fetch_url("https://a.test/drip") is None
+    assert time.perf_counter() - start < 3

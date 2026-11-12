@@ -1,9 +1,10 @@
 """Keep secrets out of logs and exception text."""
 import os
 import re
+from urllib.parse import quote, quote_plus
 from typing import Iterable
 
-_TELEGRAM_TOKEN = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
+_TELEGRAM_TOKEN = re.compile(r"bot\d+(?::|%3[Aa])[A-Za-z0-9_-]+")
 _SECRET_NAME = re.compile(r"(TOKEN|SECRET|API_KEY|PASSWORD)", re.IGNORECASE)
 
 
@@ -17,5 +18,6 @@ def redact(text: str, extra: Iterable[str] = ()) -> str:
     for secret in list(extra) + known_secrets():
         secret = (secret or "").strip('"')
         if len(secret) >= 4:
-            text = text.replace(secret, "***")
+            for form in {secret, quote(secret, safe=""), quote_plus(secret)}:
+                text = text.replace(form, "***")
     return _TELEGRAM_TOKEN.sub("bot***", text)

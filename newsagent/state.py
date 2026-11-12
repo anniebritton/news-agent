@@ -9,10 +9,37 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime
+from typing import Optional
 
 from .errors import StateCorruptError
 
 logger = logging.getLogger(__name__)
+
+
+def state_path(agent_id: str, state_dir: str = "state") -> str:
+    return os.path.join(state_dir, f"{agent_id}_processed_news.json")
+
+
+def reset_state_file(path: str, now: Optional[datetime] = None) -> Optional[str]:
+    """Recovery for a corrupt (or unwanted) state file: move it aside and write empty state with
+    last_run_at set to now. Nothing is re-seeded, so the next run treats current links as new;
+    run `--seed` afterwards to avoid that. Returns the backup path, or None if there was no file."""
+    backup = None
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                json.load(f)
+            kind = "bak"
+        except (ValueError, OSError):
+            kind = "corrupt"
+        backup = f"{path}.{kind}-{int(time.time())}"
+        os.replace(path, backup)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fresh = {"ids": [], "urls": [], "fetch_failures": {}, "last_run_at": (now or datetime.now()).isoformat()}
+    with open(path, "w") as f:
+        json.dump(fresh, f, indent=2)
+    return backup
 
 
 class StateManager:

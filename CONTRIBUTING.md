@@ -15,7 +15,7 @@ python -m pytest tests/ -v      # no API keys or network needed
 
 ## Ground rules
 
-- Keep `newsagent/` free of topic-specific code, prompts, and examples. A test checks for this.
+- Keep `newsagent/` free of topic-specific code, prompts, and examples (reviewers check this; `test_leakage.py` only catches a short list of leftover words).
 - Add a test with every change, and check that it fails without the change; the LLM and HTTP calls are faked, follow the existing patterns.
 - State is written only by `NewsAgent.commit()` after a channel accepted the message; never mark things seen earlier.
 - Never log or send exception text that could contain a secret; use `newsagent.redact.redact`.
@@ -24,7 +24,8 @@ python -m pytest tests/ -v      # no API keys or network needed
 ## Add a notification channel (good first issue)
 
 1. Create `newsagent/notifiers/<name>.py` with a class decorated `@register("<name>")` whose
-   `__init__(self, channel_cfg: dict)` reads credentials from env vars named in the config, and which
+   `__init__(self, channel_cfg: dict)`; optionally a `missing() -> list[str]` naming unset env vars so a missing secret fails before the LLM call,
+    reads credentials from env vars named in the config, and which
    implements `async def send(self, message: Message) -> bool` (True only if fully delivered). See `signal.py` for a short example and
    `Message.to_plain()` for a ready plain-text rendering.
 2. Import it in `newsagent/notifiers/__init__.py`.

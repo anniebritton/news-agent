@@ -4,7 +4,6 @@ State is never written during run_round(). The caller delivers the message and t
 commit(); if delivery fails nothing is consumed and the next run retries the same items.
 """
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -12,13 +11,13 @@ from typing import Dict, List, Optional
 from urllib.parse import urlsplit
 
 from .config import check_templates
-from .errors import ConfigError
+from .errors import ConfigError, FeedsUnreachable
 from .extractor import Extractor, _to_str
 from .fetcher import NewsFetcher
 from .llm import LLMProvider, build_provider
 from .messages import Line
 from .scraper import FeedReport, NewsScraper
-from .state import StateManager
+from .state import StateManager, state_path
 from .urls import canonical_url
 
 logger = logging.getLogger(__name__)
@@ -35,10 +34,17 @@ class RoundResult:
     failed_batches: int = 0
     fetch_failures: int = 0
     deferred: int = 0       # relevant items held back by max_items_per_message
+    feeds_total: int = 0
+    feeds_failed: int = 0   # feeds that could not be fetched at all
 
     @property
     def all_failed(self) -> bool:
         return self.total_batches > 0 and self.failed_batches == self.total_batches
+
+    @property
+    def all_feeds_failed(self) -> bool:
+        """Every feed was unreachable: an outage, not "no news"."""
+        return self.feeds_total > 0 and self.feeds_failed == self.feeds_total
 
 
 class _LazyLLM:
@@ -66,7 +72,7 @@ class NewsAgent:
         self.item_template = (config.get("messages") or {}).get("item_template", DEFAULT_ITEM_TEMPLATE)
 
         self._llm = llm
-        state_file = os.path.join(state_dir, f"{self.agent_id}_processed_news.json")
+        state_file = state_path(self.agent_id, state_dir)
         self.fetcher = NewsFetcher()
         self.state = StateManager(state_file, settings.get("max_state_items", 1000))
         self.scraper = NewsScraper(self.fetcher, self.state, config.get("keywords", []))
@@ -76,6 +82,7 @@ class NewsAgent:
             require_subject=settings.get("require_subject", True),
         )
         self.feeds = config.get("feeds") or []
+        self.last_feed_reports: List[FeedReport] = []
         self._reset_pending()
 
     # -- helpers ---------------------------------------------------------
@@ -145,12 +152,15 @@ class NewsAgent:
     async def check(self, limit: Optional[int] = None):
         """Scrape only. No LLM, no key, no state writes. Returns (feed reports, candidates)."""
         reports, candidates = await self.scraper.inspect(self.feeds)
+        self.last_feed_reports = reports
         return reports, (candidates[:limit] if limit else candidates)
 
     async def seed(self, limit: Optional[int] = None) -> int:
         """Record all current candidates as seen without notifying, so the first real run
         only reports what appears afterwards."""
-        _, candidates = await self.check(limit)
+        reports, candidates = await self.check(limit)
+        if reports and not any(r.fetched for r in reports):
+            raise FeedsUnreachable("Every feed was unreachable, so there is nothing to seed. Nothing was saved.")
         self._reset_pending()
         for c in candidates:
             self._pending_seen[c["url"]] = None
@@ -171,10 +181,18 @@ class NewsAgent:
             logger.warning("No feeds configured.")
             return result
 
-        _, candidates = await self.check(limit)
+        reports, candidates = await self.check(limit)
+        result.feeds_total = len(reports)
+        result.feeds_failed = sum(1 for r in reports if not r.fetched)
+        if result.feeds_failed:
+            logger.warning(f"{result.feeds_failed} of {result.feeds_total} feeds could not be fetched: "
+                           + ", ".join(r.url for r in reports if not r.fetched))
+        if result.all_feeds_failed:
+            return result  # an outage, not "no news": don't advance the clock or claim all is quiet
         if not candidates:
             logger.info("No new matching links found in feeds.")
-            self._pending_clock = now
+            if not result.feeds_failed:
+                self._pending_clock = now
             return result
 
         extraction = await self.extractor.extract(candidates)
@@ -207,7 +225,7 @@ class NewsAgent:
 
         # Advance the clock only if everything was handled; otherwise retried items could
         # look "too old" next time.
-        if not result.failed_batches and not result.fetch_failures:
+        if not (result.failed_batches or result.fetch_failures or result.feeds_failed):
             self._pending_clock = now
         logger.info(f"Generated {len(result.lines)} new summaries "
                     f"({result.failed_batches}/{result.total_batches} batches failed, "

@@ -193,3 +193,56 @@ async def test_no_feeds(tmp_path):
 def test_bad_template_in_programmatic_config_fails_fast(tmp_path):
     with pytest.raises(ConfigError):
         NewsAgent(cfg(messages={"item_template": "{nope}"}), llm=FakeLLM("[]"), state_dir=str(tmp_path))
+
+
+async def test_all_feeds_unreachable_is_an_outage_not_a_quiet_day(tmp_path):
+    agent = make_agent(tmp_path, FakeLLM("[]"), pages={"https://feed.test/": None})
+    agent.fetcher.fetch_url = lambda url: _none()
+    result = await agent.run_round()
+    assert result.all_feeds_failed and result.feeds_failed == 1 and result.lines == []
+    agent.commit()
+    assert agent.state.last_run_at is None       # the clock must not advance
+
+
+async def _none():
+    return None
+
+
+async def test_partial_feed_outage_warns_and_does_not_advance_the_clock(tmp_path, caplog):
+    agent = make_agent(tmp_path, FakeLLM("[]"), feeds=["https://feed.test/", "https://down.test/"])
+    real = agent.fetcher.fetch_url
+
+    async def fetch(url):
+        return None if "down.test" in url else await real(url)
+    agent.fetcher.fetch_url = fetch
+    result = await agent.run_round()
+    assert (result.feeds_failed, result.feeds_total) == (1, 2) and not result.all_feeds_failed
+    assert "down.test" in caplog.text
+    agent.commit()
+    assert agent.state.last_run_at is None
+    healthy = make_agent(tmp_path / "ok", FakeLLM("[]"))
+    await healthy.run_round(); healthy.commit()
+    assert healthy.state.last_run_at                # control: a healthy run does advance it
+
+
+async def test_seed_refuses_when_every_feed_is_unreachable(tmp_path):
+    from newsagent.errors import FeedsUnreachable
+    agent = make_agent(tmp_path, None)
+    agent.fetcher.fetch_url = lambda url: _none()
+    with pytest.raises(FeedsUnreachable):
+        await agent.seed()
+    assert not os.path.exists(agent.state.state_file)
+
+
+async def test_a_down_feed_with_no_candidates_elsewhere_still_does_not_advance_the_clock(tmp_path):
+    agent = make_agent(tmp_path, FakeLLM("[]"), pages={"https://feed.test/": "no links here"},
+                       feeds=["https://feed.test/", "https://down.test/"])
+    real = agent.fetcher.fetch_url
+
+    async def fetch(url):
+        return None if "down.test" in url else await real(url)
+    agent.fetcher.fetch_url = fetch
+    result = await agent.run_round()
+    assert result.feeds_failed == 1 and result.lines == []
+    agent.commit()
+    assert agent.state.last_run_at is None

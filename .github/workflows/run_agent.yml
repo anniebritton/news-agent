@@ -5,6 +5,18 @@
 #
 # Tests are NOT run here, so a flaky test can never block news delivery. They run on pull
 # requests in tests.yml.
+#
+# Exit codes of main.py: 0 ok | 1 failure (nothing delivered / LLM down / all feeds down) |
+# 2 config or missing secret | 3 corrupt state | 4 partial delivery (state saved). Any non-zero
+# code fails the job, which is how you find out. Details: README, "Running on GitHub Actions".
+#
+# CORRUPT STATE (exit 3 on every run): Actions > this workflow > Run workflow > tick "reset_state".
+# That backs the file up, writes empty state, and commits it; then run `--seed` locally (or accept
+# one run that re-reports whatever is currently on the pages).
+#
+# PROTECTED BRANCH: the state commit is a direct push to the branch. If branch protection blocks it,
+# either allow github-actions[bot] to bypass the rule, or keep state on a dedicated unprotected branch
+# (create it, and set the checkout `ref:` and the BRANCH env below to that branch).
 name: News Agent (example_launches)
 
 on:
@@ -15,6 +27,11 @@ on:
   # schedule:
   #   - cron: '0 6,14,22 * * *'   # UTC. Each run that finds news commits the state file.
   workflow_dispatch:
+    inputs:
+      reset_state:
+        description: "Recovery: back up the state file and start from empty state (run no agent)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -43,7 +60,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Reset state (recovery)
+        if: ${{ inputs.reset_state }}
+        run: python main.py --agent "$AGENT" --reset-state
       - name: Run agent
+        if: ${{ !inputs.reset_state }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EXAMPLE_LAUNCHES_TELEGRAM_BOT_TOKEN: ${{ secrets.EXAMPLE_LAUNCHES_TELEGRAM_BOT_TOKEN }}
@@ -66,11 +87,12 @@ jobs:
           git commit -m "chore: update $AGENT state [skip ci]"
           remote="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
           for attempt in 1 2 3; do
-            git pull --rebase "$remote" "$BRANCH"
-            if git push "$remote" "HEAD:${BRANCH}"; then
+            # pull is inside the retry: a transient fetch/rebase failure must not skip the retries
+            if git pull --rebase "$remote" "$BRANCH" && git push "$remote" "HEAD:${BRANCH}"; then
               exit 0
             fi
-            echo "Push failed (attempt $attempt), retrying..."
+            git rebase --abort 2>/dev/null || true
+            echo "Pull/push failed (attempt $attempt), retrying..."
             sleep $((attempt * 5))
           done
           echo "::error::Could not push state after 3 attempts"

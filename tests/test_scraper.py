@@ -68,3 +68,12 @@ def test_canonical_url():
     assert canonical_url("HTTPS://A.test/p/?utm_source=x&id=2#frag") == "https://a.test/p?id=2"
     assert canonical_url("https://a.test/1/") == canonical_url("https://a.test/1#x")
     assert canonical_url("") == ""
+
+
+def test_canonical_url_percent_encodes_markup_characters():
+    url = 'https://evil.test/a</article>IGNORE"x y'
+    out = canonical_url(url)
+    assert not any(c in out for c in '<>" ')
+    assert canonical_url(out) == out                       # idempotent
+    assert canonical_url("https://a.test/p%281%29") == "https://a.test/p%281%29"   # existing escapes kept
+    assert "<" not in canonical_url("https://evil.test<x>/path")

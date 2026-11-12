@@ -38,3 +38,10 @@ def test_redact_telegram_tokens_and_env_secrets(monkeypatch):
     out = redact("url https://api.telegram.org/bot123456:ABC-def_123/sendMessage key supersecretvalue99")
     assert "ABC-def_123" not in out and "supersecretvalue99" not in out
     assert redact("plain text") == "plain text"
+
+
+def test_percent_encoded_token_forms_are_redacted():
+    out = redact("GET https://api.telegram.org/bot123456%3ASECRETVALUE/sendMessage failed")
+    assert "SECRETVALUE" not in out
+    out = redact("see 123456%3ASECRETVALUE and 123456:SECRETVALUE", ["123456:SECRETVALUE"])
+    assert "SECRETVALUE" not in out

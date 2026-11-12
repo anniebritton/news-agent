@@ -70,6 +70,27 @@ def check_templates(config: dict) -> None:
         check_template(messages["item_template"], ITEM_FIELDS, "messages.item_template")
 
 
+def _check_settings(settings) -> None:
+    if settings is None:
+        return
+    if not isinstance(settings, dict):
+        raise ConfigError("settings must be a mapping")
+
+    def number(name, minimum, integer):
+        value = settings.get(name)
+        if value is None:
+            return
+        kind = int if integer else (int, float)
+        if isinstance(value, bool) or not isinstance(value, kind) or value < minimum:
+            raise ConfigError(f"settings.{name} must be {'an integer' if integer else 'a number'} >= {minimum}")
+
+    number("batch_size", 1, True)
+    number("max_items_per_message", 1, True)
+    number("max_summary_length", 1, True)
+    number("max_state_items", 1, True)
+    number("time_window_hours", 0, False)
+
+
 def validate_config(config) -> None:
     if not isinstance(config, dict):
         raise ConfigError("Config is empty or is not a YAML mapping")
@@ -86,8 +107,14 @@ def validate_config(config) -> None:
     channels = notify.get("channels") if isinstance(notify, dict) else None
     if not channels or not isinstance(channels, list) or not all(isinstance(c, dict) and c.get("type") for c in channels):
         raise ConfigError("notify.channels must list at least one channel, each with a type")
+    from .notifiers import registered_types  # lazy: the notifiers package imports this module's siblings
+    known = registered_types()
+    for channel in channels:
+        if channel["type"] not in known:
+            raise ConfigError(f"Unknown notify channel type '{channel['type']}'. Available: {', '.join(known)}")
     if "task" not in config["prompts"]:
         raise ConfigError("prompts.task is required")
+    _check_settings(config.get("settings"))
     check_templates(config)
 
 

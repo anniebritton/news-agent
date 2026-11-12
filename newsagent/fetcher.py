@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 MAX_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 5
+DEADLINE_SECONDS = 60.0   # wall-clock limit for one URL including redirects (httpx timeouts are per read)
 HTML_TYPES = ("text/html", "application/xhtml+xml")
 ALLOWED_TYPES = HTML_TYPES + ("text/plain", "text/xml", "application/xml",
                               "application/rss+xml", "application/atom+xml")
@@ -46,21 +47,29 @@ async def default_resolver(host: str, port: int) -> List[str]:
     return [i[4][0].split("%")[0] for i in infos]
 
 
+# IPv6 transition ranges that can embed (and so reach) private IPv4 addresses.
+_EXTRA_BLOCKED = [ipaddress.ip_network(n) for n in
+                  ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32")]
+
+
 def ip_is_blocked(address: str) -> bool:
     ip = ipaddress.ip_address(address)
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
+    if ip.version == 6 and any(ip in net for net in _EXTRA_BLOCKED):
+        return True
     return (not ip.is_global) or ip.is_multicast
 
 
 class NewsFetcher:
-    def __init__(self, timeout=30.0, max_bytes=MAX_BYTES, max_concurrency=8,
+    def __init__(self, timeout=30.0, max_bytes=MAX_BYTES, max_concurrency=8, deadline=DEADLINE_SECONDS,
                  resolver: Optional[Resolver] = None, transport: Optional[httpx.AsyncBaseTransport] = None):
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
         self.timeout = timeout
         self.max_bytes = max_bytes
+        self.deadline = deadline
         self.resolver = resolver or default_resolver
         self._transport = transport
         self._sem = asyncio.Semaphore(max_concurrency)
@@ -106,7 +115,9 @@ class NewsFetcher:
         async with self._sem:
             logger.info(f"Fetching URL: {url}")
             try:
-                return await self._fetch(url)
+                return await asyncio.wait_for(self._fetch(url), timeout=self.deadline)
+            except asyncio.TimeoutError:
+                logger.error(f"Giving up on {url}: exceeded the {self.deadline:.0f}s deadline")
             except BlockedURLError as e:
                 logger.warning(f"Refusing to fetch {url}: {e}")
             except Exception as e:

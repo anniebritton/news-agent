@@ -4,7 +4,7 @@ import os
 import pytest
 
 from newsagent import StateCorruptError
-from newsagent.state import StateManager
+from newsagent.state import StateManager, reset_state_file, state_path
 
 
 def test_roundtrip_and_empty_file(tmp_path):
@@ -61,3 +61,23 @@ def test_two_agents_isolated(tmp_path):
     a.mark_processed("x"); a.save_state()
     assert not StateManager(str(tmp_path / "b.json")).is_processed("x")
     assert StateManager(str(tmp_path / "a.json")).is_processed("x")
+
+
+def test_reset_state_file_backs_up_a_corrupt_file_and_writes_empty_state(tmp_path):
+    f = tmp_path / "s.json"
+    f.write_text("{broken")
+    backup = reset_state_file(str(f))
+    assert backup and backup.startswith(str(f) + ".corrupt-") and open(backup).read() == "{broken"
+    sm = StateManager(str(f))                       # loads cleanly now
+    assert not sm.processed_ids and not sm.seen_urls and sm.last_run_at
+
+
+def test_reset_state_file_backs_up_a_valid_file_as_bak_and_handles_no_file(tmp_path):
+    f = tmp_path / "s.json"
+    sm = StateManager(str(f)); sm.mark_processed("a"); sm.save_state()
+    assert ".bak-" in reset_state_file(str(f))
+    assert reset_state_file(str(tmp_path / "new" / "x.json")) is None and (tmp_path / "new" / "x.json").exists()
+
+
+def test_state_path():
+    assert state_path("abc") == os.path.join("state", "abc_processed_news.json")

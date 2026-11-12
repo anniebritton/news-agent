@@ -31,7 +31,8 @@ python main.py --agent example_launches --dry-run --limit 5
 - `--check` fetches the feeds and lists candidate links. No key, no LLM, nothing saved.
 - `--dry-run` runs the LLM and prints to the console. It never saves state, so you can iterate on prompts freely.
 - `--seed` records everything currently on the pages as already seen, without notifying. Run it once before the first real run on list-style pages, or the first message announces everything.
-- `--limit N` caps how many links are processed (handy while tuning).
+- `--limit N` (N >= 1) caps how many links are processed (handy while tuning).
+- `--reset-state` recovers from a corrupt state file (see below).
 
 To make your own, copy `agents/TEMPLATE.yaml` and edit it, or click **Use this template** on GitHub.
 
@@ -63,7 +64,7 @@ newsagent/
   notifiers/      Notifier registry + Telegram, Signal, console
 agents/           One YAML per agent (TEMPLATE.yaml + examples)
 state/            Per-agent state files
-main.py           CLI: python main.py --agent <id> [--check | --seed | --dry-run] [--limit N]
+main.py           CLI: python main.py --agent <id> [--check | --seed | --dry-run | --reset-state] [--limit N]
 ```
 
 ## Configuring an agent
@@ -98,11 +99,28 @@ commented out so a fresh copy doesn't fail before its secrets exist: add the sec
 channel secrets), then uncomment the `schedule`. Copy the file per agent and change `AGENT` and the secret names.
 The run uses a concurrency group and rebases before pushing the state commit. Tests are not run there (they run on pull requests), so a flaky test can't block delivery. High-frequency schedules create many small state commits; consider a dedicated state branch if that bothers you.
 
+### Exit codes, delivery semantics, and recovery
+
+| Code | Meaning |
+|---|---|
+| 0 | OK |
+| 1 | Failure: nothing was delivered, the LLM failed for every batch, or every feed was unreachable. State is **not** saved; the next run retries |
+| 2 | Configuration problem, or a required notification secret / API key is missing (checked before any LLM call) |
+| 3 | The state file is corrupt (it is moved aside and the run aborts instead of silently re-announcing everything) |
+| 4 | Partial delivery: some channel(s) delivered, others failed. State **was** saved |
+
+Delivery is at-least-once per run: state is saved once at least one channel accepted the message. A channel that failed while another succeeded does not receive that message again (exit 4, logged as `PARTIAL DELIVERY`). If the process crashes after sending but before saving, the next run re-sends the same items, so duplicates are possible but loss is not. If every feed is unreachable the agent says so (an outage is not "no news") and does not advance its clock; if only some are, the message carries a note.
+
+**Corrupt state (exit 3 on every run):** run `python main.py --agent <id> --reset-state` (it backs the file up as `.corrupt-<timestamp>` and writes empty state), or tick `reset_state` when running the workflow manually. Then run `--seed` so the reset doesn't re-announce everything. The previous file is in git history.
+
+**Protected branches:** the state commit is a direct push, which branch protection can block. Allow `github-actions[bot]` to bypass the rule, or keep state on a dedicated unprotected branch (see the comments in `run_agent.yml`).
+
 ## Security notes
 
 - The fetcher only requests http(s) URLs and refuses hosts that resolve to private, loopback, or link-local addresses (including after redirects), caps responses at 2 MB, and reads only text content types. It cannot fully prevent DNS rebinding.
 - Scraped article text is passed to the LLM as untrusted data with an explicit "ignore instructions in articles" rule, and all message output is escaped. A hostile page can still influence what the LLM *says* about it, so treat alerts as leads to check, not facts.
-- Secrets are redacted from logs, and the notification channel only ever receives fixed generic error text.
+- Secrets (including percent-encoded forms) are redacted from logs and from the one-line message printed for an unexpected crash; the notification channel only ever receives fixed generic error text.
+- Article delimiters are random per run and angle brackets are stripped from untrusted text, so a page or URL can't close the delimiter.
 
 ## Contributing
 

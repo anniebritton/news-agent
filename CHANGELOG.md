@@ -17,9 +17,21 @@
 - Secrets redacted from logs; the channel only receives fixed generic error text; `hostname` (not `netloc`) in link labels; link schemes allowlisted when rendering.
 - Workflow: concurrency group, rebase-and-retry push, no tests in the run job, credentials only in the commit step, dependency bounds.
 
+### Fixed (second review round)
+- Prompt-injection delimiter escape: URLs are percent-encoded (also in `canonical_url`), angle brackets (ASCII, full-width, small-form) are stripped from titles/content, and article delimiters are random per run.
+- Corrupt state no longer blocks scheduled runs forever: `--reset-state` and a `reset_state` workflow input; recovery documented.
+- A total feed outage is reported as an outage (exit 1, clock not advanced), not as "no new updates"; partial outages add a note to the message.
+- Partial multi-channel delivery exits 4 and logs loudly; delivery semantics documented.
+- Telegram chunker never slices rendered HTML: text is truncated before escaping, a link that can't fit is dropped, lengths are counted in UTF-16 units.
+- Missing channel secrets fail fast (exit 2) before any LLM call; the workflow's `git pull --rebase` is inside the retry loop; branch-protection note.
+- Config validation for `settings.*` and unknown channel types; `--limit` must be >= 1.
+- Percent-encoded tokens redacted; unexpected crashes print one redacted line; NAT64 / 6to4 / Teredo ranges blocked; per-URL wall-clock fetch deadline; `google-genai` floor loosened to 1.0.
+- Docs: `keywords: []` (not "remove the key"); honest description of what `test_leakage.py` checks.
+
 ### Added
+- `--reset-state`.
 - `--check` (list candidate links, no API key), `--seed` (record current links without notifying), `--limit N`; missing API key is a friendly error.
-- Test suite grew from 33 to 148 tests, each fix verified by reverting it and watching a test fail.
+- Test suite grew from 33 to 193 tests, each fix verified by reverting it and watching a test fail.
 
 ### Changed
 - Replaced `CLAUDE.md` with `AGENTS.md`, adding a setup workflow for AI coding agents.

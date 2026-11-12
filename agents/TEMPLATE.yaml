@@ -18,7 +18,7 @@ feeds:
 
 # Cheap pre-filter BEFORE any LLM call: a link is kept only if its title contains
 # one of these (case-insensitive). Use a flat list, or a dict of lists (merged).
-# Remove the list entirely to send every new link to the LLM.
+# Set `keywords: []` to send every new link to the LLM (the key itself is required).
 keywords:
   - "keyword one"
   - "keyword two"
@@ -85,4 +85,7 @@ settings:
   max_summary_length: 180   # characters per line in the notification
   max_items_per_message: 40 # extra items wait for the next run
   max_state_items: 1000     # IDs/URLs kept in the state file
+                            # State recovery: if a run aborts with "state file is unreadable" (exit 3), run
+                            #   python main.py --agent <id> --reset-state   (then --seed), or tick
+                            #   "reset_state" when dispatching the workflow.
   require_subject: true     # drop items where the LLM couldn't name a subject

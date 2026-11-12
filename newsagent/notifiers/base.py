@@ -6,6 +6,9 @@ To add a channel: write a class with `__init__(self, channel_cfg: dict)` and
 
 `send` must return True only if the message was fully delivered. The agent saves its
 state only after at least one channel returns True.
+
+Optionally implement `missing() -> list[str]`: names of required env vars that are not set.
+main.py checks it before any LLM call so a missing secret fails fast.
 """
 from typing import Callable, Dict, List, Protocol, Type
 
@@ -25,6 +28,10 @@ def register(name: str) -> Callable:
         _REGISTRY[name] = cls
         return cls
     return deco
+
+
+def registered_types() -> List[str]:
+    return sorted(_REGISTRY)
 
 
 def build_notifiers(config: dict) -> List[Notifier]:

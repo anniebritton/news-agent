@@ -1,4 +1,5 @@
 import logging
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -7,7 +8,7 @@ import pytest
 from helpers import cfg
 from newsagent import Line, Message
 from newsagent.notifiers import ConsoleNotifier, SignalNotifier, TelegramNotifier, build_notifiers
-from newsagent.notifiers.telegram import render_chunks
+from newsagent.notifiers.telegram import render_chunks, units
 from newsagent.errors import ConfigError
 
 TG = {"type": "telegram", "bot_token_env": "T_TOKEN", "chat_id_env": "T_CHAT"}
@@ -132,3 +133,63 @@ def test_build_notifiers_multiple_and_unknown():
     assert [type(n).__name__ for n in build_notifiers(c)] == ["TelegramNotifier", "ConsoleNotifier"]
     with pytest.raises(ConfigError):
         build_notifiers(cfg(notify={"channels": [{"type": "carrier-pigeon"}]}))
+
+
+BAD_ENTITY = re.compile(r"&(?!amp;|lt;|gt;|quot;|#x27;)")
+
+
+def assert_valid_html_chunks(chunks, limit=4096):
+    for c in chunks:
+        assert units(c) <= limit, units(c)
+        assert not BAD_ENTITY.search(c), "split or unescaped entity"
+        assert c.count("<a ") == c.count("</a>") and c.count("<b>") == c.count("</b>")
+
+
+def test_url_with_hundreds_of_ampersands_never_produces_broken_html():
+    url = "https://s.test/?" + "&".join(f"a{i}=1" for i in range(900))
+    chunks = render_chunks(Message(header="H", lines=[Line("word " * 100, url, "s.test"), Line("next", "https://s.test/ok", "s")],
+                                   footer="F"))
+    assert_valid_html_chunks(chunks)
+    joined = "\n".join(chunks)
+    assert "next" in joined and "word" in joined       # text survives; only the unfittable link is dropped
+    assert joined.count("<a ") == 1
+
+
+def test_oversized_header_and_footer_are_truncated_before_escaping():
+    msg = Message(header="<&>" * 5000, lines=[Line("x", "https://s.test/", "s")], footer="'\"&" * 5000)
+    chunks = render_chunks(msg)
+    assert_valid_html_chunks(chunks)
+    assert chunks[0].startswith("<b>") and "x" in "\n".join(chunks)
+
+
+def test_astral_characters_are_counted_as_two_utf16_units():
+    chunks = render_chunks(Message(lines=[Line("😀" * 3000, "https://s.test/", "s") for _ in range(3)]))
+    assert_valid_html_chunks(chunks)
+    assert units("😀") == 2
+
+
+def test_a_line_whose_link_alone_exceeds_the_limit_keeps_its_text():
+    chunks = render_chunks(Message(lines=[Line("important text", "https://s.test/" + "a" * 6000, "s")]))
+    assert_valid_html_chunks(chunks)
+    assert "important text" in chunks[0] and "<a " not in chunks[0]
+
+
+def test_missing_reports_the_env_var_names(monkeypatch):
+    monkeypatch.delenv("T_TOKEN", raising=False); monkeypatch.setenv("T_CHAT", "1")
+    assert TelegramNotifier(TG).missing() == ["T_TOKEN (Telegram bot token)"]
+    monkeypatch.setenv("T_TOKEN", "1:abc")
+    assert TelegramNotifier(TG).missing() == []
+    for v in ("SIGNAL_API_URL", "SIGNAL_SENDER", "SIGNAL_RECIPIENTS"):
+        monkeypatch.delenv(v, raising=False)
+    assert len(SignalNotifier({"type": "signal"}).missing()) == 3
+    assert ConsoleNotifier().missing() == []
+
+
+async def test_signal_errors_do_not_log_credentials_in_the_api_url(monkeypatch, caplog):
+    monkeypatch.setenv("SIGNAL_API_URL", "http://user:hunter2pass@sig:8080")
+    monkeypatch.setenv("SIGNAL_SENDER", "+100"); monkeypatch.setenv("SIGNAL_RECIPIENTS", "+1")
+    err = httpx.ConnectError("All connection attempts failed for http://user:hunter2pass@sig:8080/v2/send")
+    client, ctx = fake_http("signal", error=err)
+    with ctx, caplog.at_level(logging.DEBUG):
+        assert await SignalNotifier({"type": "signal"}).send(MSG) is False
+    assert "hunter2pass" not in caplog.text

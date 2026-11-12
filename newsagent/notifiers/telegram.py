@@ -1,8 +1,13 @@
-"""Telegram channel. Credentials come from env vars whose names are set in config."""
+"""Telegram channel. Credentials come from env vars whose names are set in config.
+
+Rendering rule: text is truncated BEFORE it is HTML-escaped and wrapped, and rendered HTML is
+never sliced, so a message can't end up with a split entity or an unclosed tag (Telegram answers
+those with 400, which would otherwise be retried forever).
+"""
 import html
 import logging
 import os
-from typing import List
+from typing import Callable, List
 
 import httpx
 
@@ -16,35 +21,60 @@ TELEGRAM_LIMIT = 4096
 CHUNK_LIMIT = 4000  # headroom under Telegram's hard limit
 
 
-def render_line(ln: Line) -> str:
-    url = safe_url(ln.url)
-    link = f' <a href="{html.escape(url, quote=True)}">[{html.escape(ln.label or "source")}]</a>' if url else ""
-    return f"• {html.escape(ln.text)}{link}"
+def units(text: str) -> int:
+    """Length in UTF-16 code units (conservative: counts the escaped HTML, not the parsed text)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def render_line(text: str, url: str = "", label: str = "") -> str:
+    link = f' <a href="{html.escape(url, quote=True)}">[{html.escape(label or "source")}]</a>' if url else ""
+    return f"• {html.escape(text)}{link}"
+
+
+def _shrink(text: str) -> str:
+    """Strictly shorter text, ending in an ellipsis once it is long enough to matter."""
+    return text[: int(len(text) * 0.8)].rstrip() + "…" if len(text) > 20 else text[:-1]
+
+
+def _fit_text(raw: str, wrap: Callable[[str], str], limit: int) -> str:
+    """Wrap(raw) with raw shortened (pre-escape) until the result fits."""
+    text = raw
+    while True:
+        rendered = wrap(text)
+        if units(rendered) <= limit or not text:
+            return rendered if units(rendered) <= limit else ""
+        text = _shrink(text)
 
 
 def _fit(ln: Line, limit: int) -> str:
-    """Render a line, shortening its text until it fits within limit."""
-    rendered = render_line(ln)
-    text = ln.text
-    while len(rendered) > limit and len(text) > 20:
-        text = text[: int(len(text) * 0.8)].rstrip() + "…"
-        rendered = render_line(Line(text, ln.url, ln.label))
-    return rendered[:limit]
+    """Render a line within limit: shorten the text first, then drop the link if it still doesn't fit."""
+    url, label = safe_url(ln.url), (ln.label or "source")[:80]
+    attempts = [(url, 40), ("", 1)] if url else [("", 1)]   # (link, shortest text worth keeping)
+    for link, min_len in attempts:
+        text = ln.text or ""
+        while True:
+            rendered = render_line(text, link, label)
+            if units(rendered) <= limit:
+                return rendered
+            if len(text) <= min_len:
+                break
+            text = _shrink(text)
+    return "•"
 
 
 def render_chunks(message: Message, limit: int = CHUNK_LIMIT) -> List[str]:
-    """Split a message into HTML chunks of at most `limit` characters, on line boundaries.
+    """Split a message into HTML chunks of at most `limit` UTF-16 units, on line boundaries.
     The header opens the first chunk; the footer closes the last."""
     pieces = []
     if message.header:
-        pieces.append(f"<b>{html.escape(message.header)}</b>\n"[:limit])
+        pieces.append(_fit_text(message.header, lambda t: f"<b>{html.escape(t)}</b>\n", limit))
     pieces.extend(_fit(ln, limit) for ln in message.lines)
     if message.footer:
-        pieces.append(html.escape(message.footer)[:limit])
+        pieces.append(_fit_text(message.footer, html.escape, limit))
 
     chunks, current = [], ""
-    for piece in pieces:
-        if current and len(current) + 1 + len(piece) > limit:
+    for piece in filter(None, pieces):
+        if current and units(current) + 1 + units(piece) > limit:
             chunks.append(current)
             current = piece
         else:
@@ -57,15 +87,19 @@ def render_chunks(message: Message, limit: int = CHUNK_LIMIT) -> List[str]:
 @register("telegram")
 class TelegramNotifier:
     def __init__(self, channel: dict):
-        token_env = channel.get("bot_token_env", "TELEGRAM_BOT_TOKEN")
-        chat_env = channel.get("chat_id_env", "TELEGRAM_CHAT_ID")
-        self.bot_token = os.getenv(token_env, "").strip('"')
-        self.chat_id = os.getenv(chat_env, "").strip('"')
+        self._token_env = channel.get("bot_token_env", "TELEGRAM_BOT_TOKEN")
+        self._chat_env = channel.get("chat_id_env", "TELEGRAM_CHAT_ID")
+        self.bot_token = os.getenv(self._token_env, "").strip('"')
+        self.chat_id = os.getenv(self._chat_env, "").strip('"')
         if not self.bot_token:
-            logger.warning(f"Telegram bot token not set (env var: {token_env})")
+            logger.warning(f"Telegram bot token not set (env var: {self._token_env})")
         if not self.chat_id:
-            logger.warning(f"Telegram chat id not set (env var: {chat_env})")
+            logger.warning(f"Telegram chat id not set (env var: {self._chat_env})")
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
+
+    def missing(self) -> list:
+        return ([f"{self._token_env} (Telegram bot token)"] if not self.bot_token else []) + \
+               ([f"{self._chat_env} (Telegram chat id)"] if not self.chat_id else [])
 
     async def send(self, message: Message) -> bool:
         if not (self.bot_token and self.chat_id):

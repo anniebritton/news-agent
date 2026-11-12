@@ -64,11 +64,19 @@ async def test_delivery_failure_exits_nonzero_and_does_not_save_state(env):
     assert await main.run("t") == 0 and "Acme" in rec.text
 
 
-async def test_state_saved_if_at_least_one_channel_accepts(env, monkeypatch):
+async def test_partial_delivery_saves_state_but_exits_with_a_distinct_code(env, monkeypatch, caplog):
     good, bad = Recorder(True), Recorder(False)
     monkeypatch.setattr(NewsAgent, "ensure_llm", lambda a: FakeLLM(GOOD))
     monkeypatch.setattr(main, "build_notifiers", lambda c: [bad, good])
-    assert await main.run("t") == 0 and os.path.exists(env.state)
+    assert await main.run("t") == main.EXIT_PARTIAL == 4
+    assert os.path.exists(env.state)                       # at-least-once: the good channel got it, so it is consumed
+    assert "PARTIAL DELIVERY" in caplog.text
+
+
+async def test_all_channels_accepting_is_exit_zero(env, monkeypatch):
+    monkeypatch.setattr(NewsAgent, "ensure_llm", lambda a: FakeLLM(GOOD))
+    monkeypatch.setattr(main, "build_notifiers", lambda c: [Recorder(True), Recorder(True)])
+    assert await main.run("t") == 0
 
 
 async def test_all_llm_batches_failing_notifies_and_exits_nonzero_without_saving(env):
@@ -135,7 +143,8 @@ async def test_limit_caps_candidates(env, capsys):
     assert "1 candidate" in capsys.readouterr().out
 
 
-async def test_missing_api_key_is_a_friendly_error(env, capsys):
+async def test_missing_api_key_is_a_friendly_error(env, capsys, monkeypatch):
+    monkeypatch.setenv("T_TOKEN", "1:abc"); monkeypatch.setenv("T_CHAT", "1")   # channel secrets present
     assert await main.run("t") == 2
     err = capsys.readouterr().err
     assert "GEMINI_API_KEY" in err and "Traceback" not in err
@@ -153,7 +162,8 @@ async def test_corrupt_state_aborts_with_a_clear_error(env, capsys):
     open(env.state, "w").write("{broken")
     env.use()
     assert await main.run("t") == 3
-    assert "corrupt" in capsys.readouterr().err and not env.rec.messages
+    err = capsys.readouterr().err
+    assert "corrupt" in err and "--reset-state" in err and not env.rec.messages
 
 
 async def test_broadcast_survives_a_channel_that_raises():
@@ -162,3 +172,79 @@ async def test_broadcast_survives_a_channel_that_raises():
             raise RuntimeError("x")
     ok = Recorder()
     assert await main.broadcast([Raises(), ok], Message(header="h")) == 1
+
+
+async def test_missing_channel_secret_fails_fast_before_any_llm_call(env, monkeypatch, capsys):
+    llm = FakeLLM(GOOD)
+    monkeypatch.setattr(NewsAgent, "ensure_llm", lambda a: llm)
+    monkeypatch.delenv("T_TOKEN", raising=False); monkeypatch.delenv("T_CHAT", raising=False)
+    assert await main.run("t") == main.EXIT_CONFIG
+    err = capsys.readouterr().err
+    assert "T_TOKEN" in err and "T_CHAT" in err
+    assert llm.prompts == [] and not os.path.exists(env.state)
+
+
+async def test_secrets_are_not_required_for_dry_run_check_or_seed(env, monkeypatch):
+    monkeypatch.delenv("T_TOKEN", raising=False); monkeypatch.delenv("T_CHAT", raising=False)
+    assert await main.run("t", check=True) == 0
+    assert await main.run("t", seed=True) == 0
+    monkeypatch.setattr(NewsAgent, "ensure_llm", lambda a: FakeLLM("[]"))
+    assert await main.run("t", dry_run=True) == 0
+
+
+async def test_every_feed_down_is_reported_as_an_outage_not_as_no_news(env, monkeypatch):
+    rec = env.use(llm_response="[]")
+
+    async def down(self, url):
+        return None
+    monkeypatch.setattr(NewsFetcher, "fetch_url", down)
+    assert await main.run("t") == 1
+    assert "None of the configured feeds" in rec.text and "No new updates" not in rec.text
+    assert not os.path.exists(env.state)               # clock not advanced, nothing saved
+
+
+async def test_one_feed_down_adds_a_note_to_the_message(env, monkeypatch):
+    with open("agents/t2.yaml", "w") as f:
+        yaml.safe_dump(cfg(agent={"id": "t2", "name": "T2"}, feeds=["https://feed.test/", "https://down.test/"]), f)
+    rec = env.use(llm_response="[]")
+
+    async def fetch(self, url):
+        return None if "down.test" in url else FEED_PAGE
+    monkeypatch.setattr(NewsFetcher, "fetch_url", fetch)
+    assert await main.run("t2") == 0
+    assert "1 of 2 feeds could not be fetched" in rec.text
+    assert json.load(open("state/t2_processed_news.json"))["last_run_at"] is None
+
+
+async def test_reset_state_recovers_from_a_corrupt_file(env, capsys):
+    os.makedirs("state")
+    open(env.state, "w").write("{broken")
+    assert await main.run("t") == 3                           # default stays: abort on corrupt
+    open(env.state, "w").write("{broken")                     # (the abort moved it aside; recreate it)
+    assert await main.run("t", reset_state=True) == 0
+    assert any(n.startswith("t_processed_news.json.corrupt-") for n in os.listdir("state"))
+    assert json.load(open(env.state))["ids"] == [] and json.load(open(env.state))["last_run_at"]
+    assert "--seed" in capsys.readouterr().out
+    rec = env.use()
+    assert await main.run("t") == 0 and "Acme" in rec.text   # and the next normal run works
+
+
+async def test_reset_state_without_a_file_and_with_a_bad_agent(env, capsys):
+    assert await main.run("t", reset_state=True) == 0 and os.path.exists(env.state)
+    assert await main.run("nope", reset_state=True) == 2
+
+
+def test_limit_must_be_positive():
+    for bad in ("0", "-3"):
+        with pytest.raises(SystemExit):
+            main.build_parser().parse_args(["--agent", "t", "--limit", bad])
+    assert main.build_parser().parse_args(["--agent", "t", "--limit", "5"]).limit == 5
+
+
+def test_uncaught_errors_print_one_redacted_line_and_no_traceback(monkeypatch, capsys):
+    async def boom(*a, **k):
+        raise RuntimeError("failed calling https://api.telegram.org/bot123456:SECRETTOKENVALUE/sendMessage")
+    monkeypatch.setattr(main, "run", boom)
+    assert main.cli(["--agent", "t"]) == 1
+    err = capsys.readouterr().err
+    assert "SECRETTOKENVALUE" not in err and "Traceback" not in err and len(err.strip().splitlines()) == 1

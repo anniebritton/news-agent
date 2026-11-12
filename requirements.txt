@@ -1,5 +1,5 @@
 # Runtime dependencies only (this is what the scheduled run installs).
-google-genai>=3.2,<4
+google-genai>=1.0,<4
 httpx>=0.28,<1
 beautifulsoup4>=4.12,<5
 lxml>=5.0,<7

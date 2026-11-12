@@ -15,12 +15,18 @@ logger = logging.getLogger(__name__)
 @register("signal")
 class SignalNotifier:
     def __init__(self, channel: dict):
-        self.api_url = os.getenv(channel.get("api_url_env", "SIGNAL_API_URL"), "").strip('"').rstrip("/")
-        self.sender = os.getenv(channel.get("sender_env", "SIGNAL_SENDER"), "").strip('"')
-        recipients = os.getenv(channel.get("recipients_env", "SIGNAL_RECIPIENTS"), "").strip('"')
+        self._envs = (channel.get("api_url_env", "SIGNAL_API_URL"), channel.get("sender_env", "SIGNAL_SENDER"),
+                      channel.get("recipients_env", "SIGNAL_RECIPIENTS"))
+        self.api_url = os.getenv(self._envs[0], "").strip('"').rstrip("/")
+        self.sender = os.getenv(self._envs[1], "").strip('"')
+        recipients = os.getenv(self._envs[2], "").strip('"')
         self.recipients = [r.strip() for r in recipients.split(",") if r.strip()]  # numbers or group IDs
         if not (self.api_url and self.sender and self.recipients):
             logger.warning("Signal channel is not fully configured (api url / sender / recipients)")
+
+    def missing(self) -> list:
+        values = (self.api_url, self.sender, self.recipients)
+        return [f"{name} (Signal)" for name, value in zip(self._envs, values) if not value]
 
     async def send(self, message: Message) -> bool:
         if not (self.api_url and self.sender and self.recipients):
