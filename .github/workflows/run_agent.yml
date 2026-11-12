@@ -1,42 +1,131 @@
-# Template workflow. To run another agent, copy this file to run_<id>.yml and change
-# the name, the AGENT value, and the secret names. Add secrets for whichever
-# notify channels the agent config uses (e.g. SIGNAL_* instead of TELEGRAM_*).
-name: News Agent (example_security)
+# Template workflow. To run another agent, copy this file to run_<id>.yml and change the
+# name, the AGENT value, the concurrency group (it uses the workflow name, so a new name is enough),
+# and the secret names. Add secrets for whichever notify channels the agent config uses
+# (e.g. SIGNAL_* instead of TELEGRAM_*).
+#
+# Tests are NOT run here, so a flaky test can never block news delivery. They run on pull
+# requests in tests.yml.
+#
+# Exit codes of main.py: 0 ok | 1 failure (nothing delivered / LLM down / all feeds down) |
+# 2 config or missing secret | 3 corrupt state | 4 partial delivery (state saved). Any non-zero
+# code fails the job, which is how you find out. Details: README, "Running on GitHub Actions".
+#
+# The state commit runs even when the agent exits non-zero (exit 4 = partial delivery, or a status-only
+# failure, both of which have already saved state), and a last step re-exits with the agent's code so the
+# run still shows red. Without that, the ephemeral runner would throw the saved state away and a channel
+# that already received the message would be re-notified every run.
+#
+# CORRUPT STATE: every run exits 3 until you recover. Actions > this workflow > Run workflow, tick
+# "reset_state" AND "seed". That backs the file up, writes empty state, records everything currently on
+# the pages as seen (so nothing is re-announced), and commits. Tick only "seed" to seed without a reset.
+#
+# DEAD FEEDS: a feed that fails holds back the "last run" clock (so articles it published aren't treated
+# as too old when it returns). After 5 consecutive failed runs it stops doing so and a warning names it;
+# remove permanently dead feeds from the agent's YAML.
+#
+# PROTECTED BRANCH: the state commit is a direct push to the branch. If branch protection blocks it,
+# either allow github-actions[bot] to bypass the rule, or keep state on a dedicated unprotected branch
+# (create it, and set the checkout `ref:` and the BRANCH env below to that branch).
+name: News Agent (example_launches)
 
 on:
-  schedule:
-    - cron: '0 6,14,22 * * *'   # UTC
+  # Scheduled runs are off by default so a fresh copy of this template doesn't fail
+  # before its secrets exist. Uncomment once the secrets are set.
+  # First run on a page that lists many links? Run `python main.py --agent <id> --seed` once
+  # locally and commit state/ first, or the first message will announce everything on the page.
+  # schedule:
+  #   - cron: '0 6,14,22 * * *'   # UTC. Each run that finds news commits the state file.
   workflow_dispatch:
+    inputs:
+      reset_state:
+        description: "Recovery: back up the state file and start from empty state (the agent is not run)"
+        type: boolean
+        default: false
+      seed:
+        description: "Record everything currently on the pages as seen without notifying (combine with reset_state to recover)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+# One run at a time per agent: overlapping runs would race on the state file push.
+concurrency:
+  group: news-agent-${{ github.workflow }}
+  cancel-in-progress: false
+
 env:
-  AGENT: example_security
+  AGENT: example_launches
 
 jobs:
   run-agent:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
         with:
-          python-version: '3.11'
+          persist-credentials: false   # the git token is only handed to the commit step below
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run tests
-        run: python -m pytest tests/ -v
+      - name: Reset state (recovery)
+        if: ${{ inputs.reset_state }}
+        run: python main.py --agent "$AGENT" --reset-state
+      - name: Seed state
+        if: ${{ inputs.seed }}
+        run: python main.py --agent "$AGENT" --seed
       - name: Run agent
+        id: agent
+        if: ${{ !inputs.reset_state && !inputs.seed }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          EXAMPLE_SECURITY_TELEGRAM_BOT_TOKEN: ${{ secrets.EXAMPLE_SECURITY_TELEGRAM_BOT_TOKEN }}
-          EXAMPLE_SECURITY_TELEGRAM_CHAT_ID: ${{ secrets.EXAMPLE_SECURITY_TELEGRAM_CHAT_ID }}
-        run: python main.py --agent "$AGENT"
-      - name: Commit state
+          EXAMPLE_LAUNCHES_TELEGRAM_BOT_TOKEN: ${{ secrets.EXAMPLE_LAUNCHES_TELEGRAM_BOT_TOKEN }}
+          EXAMPLE_LAUNCHES_TELEGRAM_CHAT_ID: ${{ secrets.EXAMPLE_LAUNCHES_TELEGRAM_CHAT_ID }}
         run: |
+          # Don't fail the job here: the state commit below must still run. The "Fail the run" step
+          # re-exits with this code at the end.
+          set +e
+          python main.py --agent "$AGENT"
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Commit state
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add state/
-          git diff --staged --quiet || (git commit -m "chore: update $AGENT state [skip ci]" && git push)
+          if git diff --staged --quiet; then
+            echo "No state changes."
+            exit 0
+          fi
+          git commit -m "chore: update $AGENT state [skip ci]"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          for attempt in 1 2 3; do
+            # pull is inside the retry: a transient fetch/rebase failure must not skip the retries
+            if git pull --rebase "$remote" "$BRANCH" && git push "$remote" "HEAD:${BRANCH}"; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            echo "Pull/push failed (attempt $attempt), retrying..."
+            sleep $((attempt * 5))
+          done
+          echo "::error::Could not push state after 3 attempts"
+          exit 1
+      - name: Fail the run if the agent failed
+        if: ${{ !cancelled() && steps.agent.outputs.exit_code != '' && steps.agent.outputs.exit_code != '0' }}
+        env:
+          EXIT_CODE: ${{ steps.agent.outputs.exit_code }}
+        run: |
+          echo "::error::main.py exited with code ${EXIT_CODE} (1 failure, 2 config/secret, 3 corrupt state, 4 partial delivery)"
+          exit "$EXIT_CODE"
