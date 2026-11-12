@@ -1,12 +1,18 @@
 # Agent config template. Copy to agents/<id>.yaml and fill in.
-# The id must match the filename and the --agent argument: python main.py --agent <id>
+# The id must match the filename (without .yaml) and the --agent argument:
+#   python main.py --agent <id>
+# The state file is named after the id; renaming the id later starts from empty state.
 
 agent:
   id: <id>                     # short lowercase identifier
   name: "<Human Name>"         # used in logs
-  description: "<optional one-liner>"
+  description: "<optional one-liner>"   # logged at the start of each run
 
-# Pages to scrape (RSS, news indexes, blogs...). Links found on them are candidates.
+# HTML pages that list links (news indexes, blog homepages, vendor pages). Links found on them
+# are candidates. RSS/Atom feeds are NOT supported (they yield no links), and neither are pages
+# that only render their links with JavaScript. Verify each page with:
+#   python main.py --agent <id> --check
+# The table shows how many links each page produced; 0 means it won't work.
 feeds:
   - "https://example.com/news"
 
@@ -22,7 +28,8 @@ prompts:
     You are an analyst monitoring <topic>. Extract only items that <what counts as news for you>.
     ALL OUTPUT MUST BE IN ENGLISH.
 
-  # MUST contain {indexed_text} and {date_str}
+  # MUST contain {indexed_text} and {date_str}. These prompts are Python format strings, so any
+  # other literal brace (for example a JSON example) must be doubled: {{ and }}.
   task: |
     Review the numbered articles below and return only the ones that qualify.
 
@@ -39,7 +46,7 @@ prompts:
       - "<kinds of items you don't>"
 
   # Optional. Defaults to the generic schema in newsagent/extractor.py
-  # (index, translated_title, subject, group, summary). Override only if needed,
+  # (index, translated_title, subject, group, summary, published). Override only if needed,
   # but keep those field names, since the agent reads them.
   # output_format: |
   #   ...
@@ -71,8 +78,11 @@ llm:
   # temperature: 0.0
 
 settings:
-  time_window_hours: 8      # lookback on the first run; later runs use time since last run
+  time_window_hours: 8      # items whose stated publication date is older than this are skipped.
+                            # Later runs use the time since the last run instead. Items with no stated
+                            # date are NOT filtered by age (they are deduplicated by URL).
   batch_size: 4             # articles per LLM call
   max_summary_length: 180   # characters per line in the notification
+  max_items_per_message: 40 # extra items wait for the next run
   max_state_items: 1000     # IDs/URLs kept in the state file
   require_subject: true     # drop items where the LLM couldn't name a subject

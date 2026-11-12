@@ -8,6 +8,6 @@ class ConsoleNotifier:
     def __init__(self, channel: dict = None):
         pass
 
-    async def send(self, message: Message):
+    async def send(self, message: Message) -> bool:
         print(message.to_plain())
-        return {"ok": True}
+        return True

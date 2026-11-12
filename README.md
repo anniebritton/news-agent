@@ -23,12 +23,17 @@ LAUNCH WATCH
 git clone https://github.com/anniebritton/news-agent && cd news-agent
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-GEMINI_API_KEY=... python main.py --agent example_launches --dry-run
+python main.py --agent example_launches --check      # no API key needed: shows which links it would look at
+export GEMINI_API_KEY=...                            # free key from https://aistudio.google.com/
+python main.py --agent example_launches --dry-run --limit 5
 ```
 
-`--dry-run` prints to the console and doesn't save state, so you can iterate on prompts freely. You need a
-free [Gemini API key](https://aistudio.google.com/). To make your own, copy `agents/TEMPLATE.yaml` and edit it, or
-click **Use this template** on GitHub.
+- `--check` fetches the feeds and lists candidate links. No key, no LLM, nothing saved.
+- `--dry-run` runs the LLM and prints to the console. It never saves state, so you can iterate on prompts freely.
+- `--seed` records everything currently on the pages as already seen, without notifying. Run it once before the first real run on list-style pages, or the first message announces everything.
+- `--limit N` caps how many links are processed (handy while tuning).
+
+To make your own, copy `agents/TEMPLATE.yaml` and edit it, or click **Use this template** on GitHub.
 
 > **Using an AI coding agent?** Point it at [`AGENTS.md`](AGENTS.md): it has a step-by-step workflow to set up an agent for your topic (finding feeds, writing the config, dry-running, wiring Telegram) and the rules for changing the framework.
 
@@ -37,8 +42,11 @@ click **Use this template** on GitHub.
 1. **Scrape**: fetches your feed pages in parallel and extracts links.
 2. **Pre-filter**: keeps only links whose titles match your keywords (saves LLM cost).
 3. **Extract**: fetches each article and asks the LLM, in batches, for structured items that fit your scope.
-4. **Deduplicate**: skips anything already seen or older than the lookback window (state persisted per agent).
+4. **Deduplicate**: skips links it has already handled (keyed on the canonical URL) and items whose *stated* publication date is older than the lookback window. Articles that don't state a date are not age-filtered.
 5. **Notify**: renders one channel-neutral message for every configured channel, or a short "nothing new" status.
+6. **Remember**: state is saved only after at least one channel accepted the message. If the LLM or the send fails, nothing is marked seen and the next run retries (the run exits non-zero so you notice).
+
+Feeds must be HTML pages with real links. **RSS/Atom feeds are not supported** (they yield no links); use `--check` to confirm a page works.
 
 ## Layout
 
@@ -55,7 +63,7 @@ newsagent/
   notifiers/      Notifier registry + Telegram, Signal, console
 agents/           One YAML per agent (TEMPLATE.yaml + examples)
 state/            Per-agent state files
-main.py           CLI: python main.py --agent <id> [--dry-run]
+main.py           CLI: python main.py --agent <id> [--check | --seed | --dry-run] [--limit N]
 ```
 
 ## Configuring an agent
@@ -67,10 +75,12 @@ See `agents/TEMPLATE.yaml` (annotated), `agents/example_launches.yaml` and `agen
 - `prompts`: `system`, `task` (must contain `{indexed_text}` and `{date_str}`), `scope.include/exclude`
 - `messages`: header/status/error labels and `item_template` using `{group} {subject} {title} {summary}` (the source link is added for you)
 - `notify.channels`: one or more channels (`telegram`, `signal`, `console`), each naming the env vars that hold its credentials
-- `settings`: lookback window, batch size, summary length, `require_subject`
+- `settings`: lookback window, batch size, summary length, `max_items_per_message`, `require_subject`
 
 The extractor returns items with `subject`, `group`, `summary`, and `title`; what those mean is up to your prompt
 (for launches: subject = mission, group = provider).
+
+`prompts.task` and `messages.item_template` are Python format strings: write literal braces as `{{` and `}}`. Config validation rejects unknown placeholders and unbalanced braces when the agent loads.
 
 For Telegram, the bot token is the full `123456:ABC...` string, and the chat ID is negative for groups/channels.
 
@@ -86,7 +96,13 @@ Signal has no official bot API; the built-in channel talks to a self-hosted [sig
 `.github/workflows/run_agent.yml` runs the agent and commits the state file with `[skip ci]`. Scheduled runs are
 commented out so a fresh copy doesn't fail before its secrets exist: add the secrets (`GEMINI_API_KEY` plus your
 channel secrets), then uncomment the `schedule`. Copy the file per agent and change `AGENT` and the secret names.
-High-frequency schedules create many small state commits; consider a dedicated state branch if that bothers you.
+The run uses a concurrency group and rebases before pushing the state commit. Tests are not run there (they run on pull requests), so a flaky test can't block delivery. High-frequency schedules create many small state commits; consider a dedicated state branch if that bothers you.
+
+## Security notes
+
+- The fetcher only requests http(s) URLs and refuses hosts that resolve to private, loopback, or link-local addresses (including after redirects), caps responses at 2 MB, and reads only text content types. It cannot fully prevent DNS rebinding.
+- Scraped article text is passed to the LLM as untrusted data with an explicit "ignore instructions in articles" rule, and all message output is escaped. A hostile page can still influence what the LLM *says* about it, so treat alerts as leads to check, not facts.
+- Secrets are redacted from logs, and the notification channel only ever receives fixed generic error text.
 
 ## Contributing
 

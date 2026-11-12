@@ -1,11 +1,17 @@
-# Template workflow. To run another agent, copy this file to run_<id>.yml and change
-# the name, the AGENT value, and the secret names. Add secrets for whichever
-# notify channels the agent config uses (e.g. SIGNAL_* instead of TELEGRAM_*).
+# Template workflow. To run another agent, copy this file to run_<id>.yml and change the
+# name, the AGENT value, the concurrency group (it uses the workflow name, so a new name is enough),
+# and the secret names. Add secrets for whichever notify channels the agent config uses
+# (e.g. SIGNAL_* instead of TELEGRAM_*).
+#
+# Tests are NOT run here, so a flaky test can never block news delivery. They run on pull
+# requests in tests.yml.
 name: News Agent (example_launches)
 
 on:
   # Scheduled runs are off by default so a fresh copy of this template doesn't fail
   # before its secrets exist. Uncomment once the secrets are set.
+  # First run on a page that lists many links? Run `python main.py --agent <id> --seed` once
+  # locally and commit state/ first, or the first message will announce everything on the page.
   # schedule:
   #   - cron: '0 6,14,22 * * *'   # UTC. Each run that finds news commits the state file.
   workflow_dispatch:
@@ -13,23 +19,30 @@ on:
 permissions:
   contents: write
 
+# One run at a time per agent: overlapping runs would race on the state file push.
+concurrency:
+  group: news-agent-${{ github.workflow }}
+  cancel-in-progress: false
+
 env:
   AGENT: example_launches
 
 jobs:
   run-agent:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false   # the git token is only handed to the commit step below
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run tests
-        run: python -m pytest tests/ -v
       - name: Run agent
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -37,8 +50,28 @@ jobs:
           EXAMPLE_LAUNCHES_TELEGRAM_CHAT_ID: ${{ secrets.EXAMPLE_LAUNCHES_TELEGRAM_CHAT_ID }}
         run: python main.py --agent "$AGENT"
       - name: Commit state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add state/
-          git diff --staged --quiet || (git commit -m "chore: update $AGENT state [skip ci]" && git push)
+          if git diff --staged --quiet; then
+            echo "No state changes."
+            exit 0
+          fi
+          git commit -m "chore: update $AGENT state [skip ci]"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          for attempt in 1 2 3; do
+            git pull --rebase "$remote" "$BRANCH"
+            if git push "$remote" "HEAD:${BRANCH}"; then
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt), retrying..."
+            sleep $((attempt * 5))
+          done
+          echo "::error::Could not push state after 3 attempts"
+          exit 1
